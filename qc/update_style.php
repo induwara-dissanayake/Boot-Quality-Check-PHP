@@ -1,11 +1,25 @@
 <?php
 require_once 'db.php';
 
-// Ensure proper JSON response headers
+// Set proper headers for all responses
 header('Content-Type: application/json');
+header('Access-Control-Allow-Origin: *');
+header('Access-Control-Allow-Methods: POST, OPTIONS');
+header('Access-Control-Allow-Headers: Content-Type, X-CSRF-TOKEN');
+
+// Handle preflight OPTIONS request
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    exit(0);
+}
 
 if (!isset($_SESSION['admin_id'])) {
     echo json_encode(['success' => false, 'message' => 'Unauthorized']);
+    exit();
+}
+
+// Verify CSRF token
+if (!isset($_SERVER['HTTP_X_CSRF_TOKEN']) || $_SERVER['HTTP_X_CSRF_TOKEN'] !== $_SESSION['csrf_token']) {
+    echo json_encode(['success' => false, 'message' => 'Invalid security token']);
     exit();
 }
 
@@ -34,8 +48,8 @@ try {
     // Start transaction
     $pdo->beginTransaction();
     
-    // Check if style exists
-    $stmt = $pdo->prepare("SELECT image_path FROM styles WHERE id = ?");
+    // Check if style exists and get current values
+    $stmt = $pdo->prepare("SELECT style_no, po_no, image_path FROM styles WHERE id = ?");
     $stmt->execute([$id]);
     $style = $stmt->fetch(PDO::FETCH_ASSOC);
     
@@ -43,6 +57,8 @@ try {
         throw new Exception('Style not found');
     }
     
+    $old_style_no = $style['style_no'];
+    $old_po_no = $style['po_no'];
     $image_path = $style['image_path'];
     
     // Handle image upload if new image is provided
@@ -72,15 +88,33 @@ try {
             throw new Exception('Error uploading image');
         }
     }
-    
-    // Update style in database
+
+    // Update the style record
     $stmt = $pdo->prepare("UPDATE styles SET style_no = ?, po_no = ?, image_path = ? WHERE id = ?");
-    $stmt->execute([$style_no, $po_no, $image_path, $id]);
+    $result = $stmt->execute([$style_no, $po_no, $image_path, $id]);
+
+    if (!$result) {
+        throw new Exception('Failed to update style');
+    }
+
+    // Update related records
+    $stmt = $pdo->prepare("
+        UPDATE qc_desma_records 
+        SET style_no = ?, po_no = ? 
+        WHERE style_no = ? AND po_no = ?
+    ");
+    $stmt->execute([$style_no, $po_no, $old_style_no, $old_po_no]);
     
     $pdo->commit();
     
-    echo json_encode(['success' => true]);
+    echo json_encode(['success' => true, 'message' => 'Style updated successfully']);
 } catch (Exception $e) {
-    $pdo->rollBack();
-    echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+    if ($pdo->inTransaction()) {
+        $pdo->rollBack();
+    }
+    
+    echo json_encode([
+        'success' => false, 
+        'message' => 'Error updating style: ' . $e->getMessage()
+    ]);
 } 

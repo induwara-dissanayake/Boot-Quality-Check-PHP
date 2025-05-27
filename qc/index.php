@@ -35,7 +35,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             header('Location: dashboard.php');
             exit();
         } else {
-            $error = 'Invalid EFC number';
+            $error = 'Invalid EPF number';
         }
     } else {
         $error = 'Invalid username or password';
@@ -110,7 +110,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         </div>
                         <div class="form-floating mb-4">
                             <input type="text" class="form-control" id="efc_no" name="efc_no" placeholder="EFC Number" required>
-                            <label for="efc_no"><i class="fas fa-id-card me-2"></i>EFC Number</label>
+                            <label for="efc_no"><i class="fas fa-id-card me-2"></i>EPF Number</label>
                         </div>
                         <button type="submit" class="btn btn-primary w-100 mb-3">
                             <i class="fas fa-sign-in-alt me-2"></i>Login

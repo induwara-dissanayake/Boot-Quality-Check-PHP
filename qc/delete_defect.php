@@ -4,7 +4,7 @@ require_once 'db.php';
 // Set proper headers for all responses
 header('Content-Type: application/json');
 header('Access-Control-Allow-Origin: *');
-header('Access-Control-Allow-Methods: POST, OPTIONS');
+header('Access-Control-Allow-Methods: DELETE, POST, OPTIONS');
 header('Access-Control-Allow-Headers: Content-Type, X-CSRF-TOKEN');
 
 // Handle preflight OPTIONS request
@@ -24,12 +24,18 @@ if (!isset($_SERVER['HTTP_X_CSRF_TOKEN']) || $_SERVER['HTTP_X_CSRF_TOKEN'] !== $
     exit();
 }
 
-// Get the ID from POST request
-$id = $_POST['id'] ?? null;
+// Get the ID from either POST or DELETE request
+$id = null;
+if ($_SERVER['REQUEST_METHOD'] === 'DELETE') {
+    $input = json_decode(file_get_contents("php://input"), true);
+    $id = $input['id'] ?? null;
+} else {
+    $id = $_POST['id'] ?? null;
+}
 
 // Check if ID is provided and valid
 if (!$id || !is_numeric($id)) {
-    echo json_encode(['success' => false, 'message' => 'Invalid style ID']);
+    echo json_encode(['success' => false, 'message' => 'Invalid defect ID']);
     exit();
 }
 
@@ -37,34 +43,19 @@ try {
     // Start transaction
     $pdo->beginTransaction();
 
-    // First get the style details
-    $stmt = $pdo->prepare("SELECT style_no, po_no, image_path FROM styles WHERE id = ?");
+    // Check if defect exists
+    $stmt = $pdo->prepare("SELECT id FROM defects WHERE id = ?");
     $stmt->execute([$id]);
-    $style = $stmt->fetch();
-
-    if (!$style) {
-        throw new Exception('Style not found');
+    if (!$stmt->fetch()) {
+        throw new Exception('Defect not found');
     }
 
-    // Delete related QC records first
-    $stmt = $pdo->prepare("DELETE FROM qc_desma_records WHERE style_no = ? AND po_no = ?");
-    $stmt->execute([$style['style_no'], $style['po_no']]);
-
-    // Delete related QC records from qc_records table if it exists
-    $stmt = $pdo->prepare("DELETE FROM qc_records WHERE style_no = ? AND po_no = ?");
-    $stmt->execute([$style['style_no'], $style['po_no']]);
-
-    // Now delete the style
-    $stmt = $pdo->prepare("DELETE FROM styles WHERE id = ?");
+    // Delete the defect
+    $stmt = $pdo->prepare("DELETE FROM defects WHERE id = ?");
     $result = $stmt->execute([$id]);
 
     if (!$result) {
-        throw new Exception('Failed to delete style from database');
-    }
-
-    // Delete the image file if it exists
-    if ($style['image_path'] && file_exists($style['image_path'])) {
-        unlink($style['image_path']);
+        throw new Exception('Failed to delete defect');
     }
 
     // Commit transaction
@@ -72,7 +63,7 @@ try {
 
     echo json_encode([
         'success' => true, 
-        'message' => 'Style and related records deleted successfully'
+        'message' => 'Defect deleted successfully'
     ]);
 
 } catch (Exception $e) {
@@ -85,4 +76,5 @@ try {
         'success' => false, 
         'message' => 'Error: ' . $e->getMessage()
     ]);
-} 
+}
+?> 

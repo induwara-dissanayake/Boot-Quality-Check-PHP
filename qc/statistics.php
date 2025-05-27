@@ -18,6 +18,7 @@ error_log('Debug - Using MySQL Date: ' . $today);
 $stats = $pdo->prepare("
     SELECT 
         SUM(CASE WHEN status = 'Pass' THEN quantity ELSE 0 END) as pass_count,
+        SUM(CASE WHEN status = 'Rework Pass' THEN quantity ELSE 0 END) as rework_pass_count,
         SUM(CASE WHEN status = 'Rework' THEN quantity ELSE 0 END) as rework_count,
         SUM(CASE WHEN status = 'Reject' THEN quantity ELSE 0 END) as reject_count,
         SUM(quantity) as total_count,
@@ -66,6 +67,7 @@ $week_end = date('Y-m-d', strtotime('sunday this week'));
 $weekly_stats = $pdo->prepare("
     SELECT 
         SUM(CASE WHEN status = 'Pass' THEN quantity ELSE 0 END) as pass_count,
+        SUM(CASE WHEN status = 'Rework Pass' THEN quantity ELSE 0 END) as rework_pass_count,
         SUM(CASE WHEN status = 'Rework' THEN quantity ELSE 0 END) as rework_count,
         SUM(CASE WHEN status = 'Reject' THEN quantity ELSE 0 END) as reject_count,
         SUM(quantity) as total_count
@@ -88,12 +90,14 @@ function calculatePercentage($value, $total) {
 
 $daily_percentages = [
     'pass' => calculatePercentage($daily_stats['pass_count'], $daily_stats['total_count']),
+    'rework_pass' => calculatePercentage($daily_stats['rework_pass_count'], $daily_stats['total_count']),
     'rework' => calculatePercentage($daily_stats['rework_count'], $daily_stats['total_count']),
     'reject' => calculatePercentage($daily_stats['reject_count'], $daily_stats['total_count'])
 ];
 
 $weekly_percentages = [
     'pass' => calculatePercentage($weekly_data['pass_count'], $weekly_data['total_count']),
+    'rework_pass' => calculatePercentage($weekly_data['rework_pass_count'], $weekly_data['total_count']),
     'rework' => calculatePercentage($weekly_data['rework_count'], $weekly_data['total_count']),
     'reject' => calculatePercentage($weekly_data['reject_count'], $weekly_data['total_count'])
 ];
@@ -160,7 +164,7 @@ error_log('Weekly Percentages: ' . print_r($weekly_percentages, true));
 
         .stats-grid {
             display: grid;
-            grid-template-columns: repeat(3, 1fr);
+            grid-template-columns: repeat(4, 1fr);
             gap: 15px;
         }
 
@@ -177,6 +181,7 @@ error_log('Weekly Percentages: ' . print_r($weekly_percentages, true));
         }
 
         .stat-item.pass { background-color: rgba(46, 204, 113, 0.1); }
+        .stat-item.rework-pass { background-color: rgba(52, 152, 219, 0.1); }
         .stat-item.rework { background-color: rgba(241, 196, 15, 0.1); }
         .stat-item.reject { background-color: rgba(231, 76, 60, 0.1); }
 
@@ -204,7 +209,16 @@ error_log('Weekly Percentages: ' . print_r($weekly_percentages, true));
             text-align: center;
         }
 
-        @media (max-width: 768px) {
+        /* Tablet view */
+        @media (max-width: 992px) {
+            .stats-grid {
+                grid-template-columns: repeat(2, 1fr);
+                gap: 10px;
+            }
+        }
+
+        /* Mobile view */
+        @media (max-width: 576px) {
             .stats-grid {
                 grid-template-columns: 1fr;
                 gap: 10px;
@@ -224,9 +238,7 @@ error_log('Weekly Percentages: ' . print_r($weekly_percentages, true));
                     <li class="nav-item">
                         <a class="nav-link active" href="statistics.php">DESMA Statistics</a>
                     </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="desma.php">DESMA</a>
-                    </li>
+        
                 </ul>
                 <ul class="navbar-nav">
                     <li class="nav-item">
@@ -253,6 +265,11 @@ error_log('Weekly Percentages: ' . print_r($weekly_percentages, true));
                     <div class="label">Pass</div>
                     <div class="percentage"><?php echo $daily_percentages['pass']; ?>%</div>
                 </div>
+                <div class="stat-item rework-pass">
+                    <div class="count"><?php echo number_format($daily_stats['rework_pass_count'] ?? 0); ?></div>
+                    <div class="label">Rework Pass</div>
+                    <div class="percentage"><?php echo $daily_percentages['rework_pass']; ?>%</div>
+                </div>
                 <div class="stat-item rework">
                     <div class="count"><?php echo number_format($daily_stats['rework_count'] ?? 0); ?></div>
                     <div class="label">Rework</div>
@@ -274,6 +291,11 @@ error_log('Weekly Percentages: ' . print_r($weekly_percentages, true));
                     <div class="count"><?php echo number_format($weekly_data['pass_count'] ?? 0); ?></div>
                     <div class="label">Pass</div>
                     <div class="percentage"><?php echo $weekly_percentages['pass']; ?>%</div>
+                </div>
+                <div class="stat-item rework-pass">
+                    <div class="count"><?php echo number_format($weekly_data['rework_pass_count'] ?? 0); ?></div>
+                    <div class="label">Rework Pass</div>
+                    <div class="percentage"><?php echo $weekly_percentages['rework_pass']; ?>%</div>
                 </div>
                 <div class="stat-item rework">
                     <div class="count"><?php echo number_format($weekly_data['rework_count'] ?? 0); ?></div>

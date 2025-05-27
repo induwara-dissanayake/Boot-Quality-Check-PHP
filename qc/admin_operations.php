@@ -6,23 +6,17 @@ if (!isset($_SESSION['admin_id'])) {
     exit();
 }
 
+// Generate CSRF token if not exists
+if (!isset($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+
 $success = '';
 $error = '';
 
 // Handle form submissions
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    if (isset($_POST['add_operation'])) {
-        $operation = trim($_POST['operation']);
-        if (!empty($operation)) {
-            try {
-                $stmt = $pdo->prepare("INSERT INTO operations (operation) VALUES (?)");
-                $stmt->execute([$operation]);
-                $success = "Operation added successfully!";
-            } catch (PDOException $e) {
-                $error = "Error adding operation. It might already exist.";
-            }
-        }
-    } elseif (isset($_POST['add_defect'])) {
+    if (isset($_POST['add_defect'])) {
         $defect = trim($_POST['defect']);
         if (!empty($defect)) {
             try {
@@ -36,10 +30,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-// Get all operations
-$stmt = $pdo->query("SELECT * FROM operations ORDER BY operation");
-$operations = $stmt->fetchAll();
-
 // Get all defects
 $stmt = $pdo->query("SELECT * FROM defects ORDER BY defect");
 $defects = $stmt->fetchAll();
@@ -49,7 +39,8 @@ $defects = $stmt->fetchAll();
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Boots QC - Manage Operations & Defects</title>
+    <meta name="csrf-token" content="<?php echo $_SESSION['csrf_token']; ?>">
+    <title>Boots QC - Manage Defects</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
@@ -179,6 +170,24 @@ $defects = $stmt->fetchAll();
             border-radius: 15px;
             font-weight: normal;
         }
+
+        .delete-btn {
+            background: #dc3545;
+            color: white;
+            border: none;
+            padding: 4px 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .delete-btn:hover {
+            background: #c82333;
+        }
+
+        .delete-btn i {
+            font-size: 0.9rem;
+        }
     </style>
 </head>
 <body>
@@ -200,6 +209,11 @@ $defects = $stmt->fetchAll();
                     <li class="nav-item">
                         <a class="nav-link" href="reports.php">
                             <i class="fas fa-chart-bar me-1"></i>Reports
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="manage_users.php">
+                            <i class="fas fa-users me-1"></i>Manage Users
                         </a>
                     </li>
                 </ul>
@@ -228,41 +242,8 @@ $defects = $stmt->fetchAll();
             </div>
         <?php endif; ?>
 
-        <div class="row">
-            <div class="col-md-6 mb-4">
-                <div class="card">
-                    <div class="card-header">
-                        <h5 class="mb-0"><i class="fas fa-cogs me-2"></i>Manage Operations</h5>
-                    </div>
-                    <div class="card-body">
-                        <form method="POST" class="mb-4">
-                            <div class="input-group">
-                                <input type="text" class="form-control" name="operation" 
-                                       placeholder="Enter new operation" required>
-                                <button type="submit" name="add_operation" class="btn btn-primary">
-                                    <i class="fas fa-plus me-2"></i>Add
-                                </button>
-                            </div>
-                        </form>
-                        <div class="search-box">
-                            <i class="fas fa-search"></i>
-                            <input type="text" class="form-control" id="operationSearch" 
-                                   placeholder="Search operations...">
-                        </div>
-                        <div class="list-container">
-                            <div class="list-group" id="operationsList">
-                                <?php foreach ($operations as $operation): ?>
-                                    <div class="list-group-item">
-                                        <span><?php echo htmlspecialchars($operation['operation']); ?></span>
-                                        <span class="badge">ID: <?php echo $operation['id']; ?></span>
-                                    </div>
-                                <?php endforeach; ?>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-6 mb-4">
+        <div class="row justify-content-center">
+            <div class="col-md-8 mb-4">
                 <div class="card">
                     <div class="card-header">
                         <h5 class="mb-0"><i class="fas fa-exclamation-triangle me-2"></i>Manage Defects</h5>
@@ -287,7 +268,12 @@ $defects = $stmt->fetchAll();
                                 <?php foreach ($defects as $defect): ?>
                                     <div class="list-group-item">
                                         <span><?php echo htmlspecialchars($defect['defect']); ?></span>
-                                        <span class="badge">ID: <?php echo $defect['id']; ?></span>
+                                        <div class="d-flex align-items-center">
+                                            <span class="badge me-2">ID: <?php echo $defect['id']; ?></span>
+                                            <button class="delete-btn" onclick="deleteDefect(<?php echo $defect['id']; ?>)">
+                                                <i class="fas fa-trash"></i>
+                                            </button>
+                                        </div>
                                     </div>
                                 <?php endforeach; ?>
                             </div>
@@ -302,14 +288,6 @@ $defects = $stmt->fetchAll();
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
         $(document).ready(function() {
-            // Live search for operations
-            $('#operationSearch').on('keyup', function() {
-                var value = $(this).val().toLowerCase();
-                $('#operationsList .list-group-item').filter(function() {
-                    $(this).toggle($(this).text().toLowerCase().indexOf(value) > -1);
-                });
-            });
-
             // Live search for defects
             $('#defectSearch').on('keyup', function() {
                 var value = $(this).val().toLowerCase();
@@ -323,6 +301,53 @@ $defects = $stmt->fetchAll();
                 $('.alert').alert('close');
             }, 5000);
         });
+
+        function deleteDefect(id) {
+            if (confirm('Are you sure you want to delete this defect?')) {
+                const csrfToken = $('meta[name="csrf-token"]').attr('content');
+                const deleteBtn = event.target.closest('button');
+                const originalContent = deleteBtn.innerHTML;
+                deleteBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+                deleteBtn.disabled = true;
+
+                fetch('delete_defect.php', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'X-CSRF-TOKEN': csrfToken
+                    },
+                    body: 'id=' + id
+                })
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('Network response was not ok');
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    if (data.success) {
+                        const item = deleteBtn.closest('.list-group-item');
+                        item.style.opacity = '0';
+                        setTimeout(() => {
+                            item.remove();
+                            if (document.querySelectorAll('#defectsList .list-group-item').length === 0) {
+                                location.reload();
+                            }
+                        }, 400);
+                    } else {
+                        throw new Error(data.message || 'Error deleting defect');
+                    }
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    alert(error.message || 'Error deleting defect. Please try again.');
+                })
+                .finally(() => {
+                    deleteBtn.innerHTML = originalContent;
+                    deleteBtn.disabled = false;
+                });
+            }
+        }
     </script>
 </body>
 </html> 

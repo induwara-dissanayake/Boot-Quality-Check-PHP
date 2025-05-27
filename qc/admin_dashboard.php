@@ -6,6 +6,11 @@ if (!isset($_SESSION['admin_id'])) {
     exit();
 }
 
+// Generate CSRF token if not exists
+if (!isset($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+
 $success = '';
 $error = '';
 
@@ -63,6 +68,7 @@ $styles = $stmt->fetchAll();
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="<?php echo $_SESSION['csrf_token']; ?>">
     <title>Boots QC - Admin Dashboard</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
@@ -88,6 +94,7 @@ $styles = $stmt->fetchAll();
             border-radius: 10px;
             box-shadow: 0 4px 6px rgba(0,0,0,0.1);
             transition: transform 0.2s;
+            margin-bottom: 1.5rem;
         }
         
         .card:hover {
@@ -119,6 +126,8 @@ $styles = $stmt->fetchAll();
         .img-thumbnail {
             border-radius: 8px;
             transition: transform 0.2s;
+            max-width: 80px;
+            height: auto;
         }
         
         .img-thumbnail:hover {
@@ -137,6 +146,80 @@ $styles = $stmt->fetchAll();
         .form-control:focus {
             border-color: var(--accent-color);
             box-shadow: 0 0 0 0.2rem rgba(52, 152, 219, 0.25);
+        }
+
+        /* Responsive styles */
+        @media (max-width: 991.98px) {
+            .container {
+                padding: 0 15px;
+            }
+            
+            .card {
+                margin-bottom: 1rem;
+            }
+            
+            .table-responsive {
+                margin: 0 -15px;
+            }
+            
+            .table td, .table th {
+                padding: 0.5rem;
+                font-size: 0.9rem;
+            }
+            
+            .btn-sm {
+                padding: 0.25rem 0.5rem;
+                font-size: 0.8rem;
+            }
+            
+            .img-thumbnail {
+                max-width: 60px;
+            }
+            
+            .modal-dialog {
+                margin: 0.5rem;
+            }
+        }
+
+        @media (max-width: 767.98px) {
+            .navbar-brand {
+                font-size: 1.1rem;
+            }
+            
+            .nav-link {
+                padding: 0.5rem 1rem;
+            }
+            
+            .card-header h5 {
+                font-size: 1.1rem;
+            }
+            
+            .form-label {
+                font-size: 0.9rem;
+            }
+            
+            .form-text {
+                font-size: 0.8rem;
+            }
+            
+            .btn {
+                width: 100%;
+                margin-bottom: 0.5rem;
+            }
+            
+            .table td, .table th {
+                white-space: nowrap;
+            }
+            
+            .actions-cell {
+                display: flex;
+                gap: 0.5rem;
+            }
+            
+            .actions-cell .btn {
+                width: auto;
+                margin-bottom: 0;
+            }
         }
     </style>
 </head>
@@ -159,6 +242,11 @@ $styles = $stmt->fetchAll();
                     <li class="nav-item">
                         <a class="nav-link" href="reports.php">
                             <i class="fas fa-chart-bar me-1"></i>Reports
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="manage_users.php">
+                            <i class="fas fa-users me-1"></i>Manage Users
                         </a>
                     </li>
                 </ul>
@@ -233,7 +321,7 @@ $styles = $stmt->fetchAll();
                                         <th>PO No</th>
                                         <th>Image</th>
                                         <th>Added Date</th>
-                                        <th>Actions</th>
+                                        <th class="actions-cell">Actions</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -245,10 +333,10 @@ $styles = $stmt->fetchAll();
                                             <img src="<?php echo htmlspecialchars($style['image_path']); ?>" 
                                                  alt="Style Image" 
                                                  class="img-thumbnail" 
-                                                 style="max-width: 100px;">
+                                                 loading="lazy">
                                         </td>
                                         <td><?php echo htmlspecialchars($style['created_at']); ?></td>
-                                        <td>
+                                        <td class="actions-cell">
                                             <button class="btn btn-sm btn-primary" onclick="editStyle(<?php echo $style['id']; ?>)">
                                                 <i class="fas fa-edit"></i>
                                             </button>
@@ -269,7 +357,7 @@ $styles = $stmt->fetchAll();
 
     <!-- Edit Style Modal -->
     <div class="modal fade" id="editStyleModal" tabindex="-1">
-        <div class="modal-dialog">
+        <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content">
                 <div class="modal-header">
                     <h5 class="modal-title">Edit Style</h5>
@@ -308,7 +396,34 @@ $styles = $stmt->fetchAll();
     <script src="https://cdn.datatables.net/1.11.5/js/jquery.dataTables.min.js"></script>
     <script src="https://cdn.datatables.net/1.11.5/js/dataTables.bootstrap5.min.js"></script>
     <script>
+        // Add showAlert function
+        function showAlert(message, type = 'success') {
+            const alertDiv = document.createElement('div');
+            alertDiv.className = `alert alert-${type} alert-dismissible fade show`;
+            alertDiv.innerHTML = `
+                <i class="fas fa-${type === 'success' ? 'check' : 'exclamation'}-circle me-2"></i>
+                ${message}
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            `;
+            
+            // Insert the alert at the top of the card
+            const firstCard = document.querySelector('.card');
+            firstCard.insertBefore(alertDiv, firstCard.firstChild);
+            
+            // Remove the alert after 5 seconds
+            setTimeout(() => {
+                alertDiv.remove();
+            }, 5000);
+        }
+
         $(document).ready(function() {
+            // Add CSRF token to all AJAX requests
+            $.ajaxSetup({
+                headers: {
+                    'X-CSRF-TOKEN': $('meta[name="csrf-token"]').attr('content')
+                }
+            });
+
             $('#stylesTable').DataTable({
                 order: [[3, 'desc']],
                 pageLength: 10,
@@ -363,6 +478,13 @@ $styles = $stmt->fetchAll();
 
         function updateStyle() {
             const formData = new FormData($('#editStyleForm')[0]);
+            const csrfToken = $('meta[name="csrf-token"]').attr('content');
+            
+            // Show loading state
+            const submitBtn = $('.modal-footer .btn-primary');
+            const originalContent = submitBtn.html();
+            submitBtn.html('<i class="fas fa-spinner fa-spin"></i> Updating...');
+            submitBtn.prop('disabled', true);
             
             $.ajax({
                 url: 'update_style.php',
@@ -370,40 +492,91 @@ $styles = $stmt->fetchAll();
                 data: formData,
                 processData: false,
                 contentType: false,
-                dataType: 'json',
+                headers: {
+                    'X-CSRF-TOKEN': csrfToken
+                },
                 success: function(response) {
                     if (response.success) {
+                        // Close the modal
+                        $('#editStyleModal').modal('hide');
+                        
+                        // Show success message
+                        showAlert(response.message || 'Style updated successfully', 'success');
+                        
+                        // Reload the page to show updated data
                         location.reload();
                     } else {
-                        alert(response.message || 'Error updating style');
+                        showAlert(response.message || 'Error updating style', 'danger');
                     }
                 },
                 error: function(xhr, status, error) {
                     console.error('Error:', error);
-                    alert('Error updating style. Please try again.');
+                    console.error('Status:', status);
+                    console.error('Response:', xhr.responseText);
+                    
+                    showAlert('Error updating style. Please try again.', 'danger');
+                },
+                complete: function() {
+                    // Reset button state
+                    submitBtn.html(originalContent);
+                    submitBtn.prop('disabled', false);
                 }
             });
         }
 
         function deleteStyle(id) {
-            if (confirm('Are you sure you want to delete this style?')) {
-                $.ajax({
-                    url: 'delete_style.php',
-                    method: 'POST',
-                    data: { id: id },
-                    success: function(response) {
-                        const result = JSON.parse(response);
-                        if (result.success) {
-                            location.reload();
-                        } else {
-                            alert(result.message || 'Error deleting style');
-                        }
-                    },
-                    error: function() {
-                        alert('Error deleting style');
-                    }
-                });
+            if (!confirm('Are you sure you want to delete this style? This action cannot be undone.')) {
+                return;
             }
+
+            // Show loading state
+            const deleteBtn = event.target.closest('button');
+            const originalContent = deleteBtn.innerHTML;
+            deleteBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+            deleteBtn.disabled = true;
+
+            fetch('delete_style.php', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').content
+                },
+                body: 'id=' + id
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Network response was not ok');
+                }
+                return response.json();
+            })
+            .then(data => {
+                if (data.success) {
+                    // Get the DataTable instance
+                    const table = $('#stylesTable').DataTable();
+                    
+                    // Find and remove the row
+                    const row = $(`tr[data-id="${id}"]`);
+                    if (row.length) {
+                        table.row(row).remove().draw();
+                    } else {
+                        // If row not found, reload the page
+                        location.reload();
+                    }
+                    
+                    showAlert('Style deleted successfully', 'success');
+                } else {
+                    throw new Error(data.message || 'Error deleting style');
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                showAlert(error.message || 'Error deleting style. Please try again.', 'danger');
+            })
+            .finally(() => {
+                // Reset button state
+                deleteBtn.innerHTML = originalContent;
+                deleteBtn.disabled = false;
+            });
         }
     </script>
 </body>

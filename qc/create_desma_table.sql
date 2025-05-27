@@ -5,7 +5,7 @@ CREATE TABLE IF NOT EXISTS qc_desma_records (
     defect_id INT,
     user_id INT NOT NULL,
     qcc_id INT NOT NULL,
-    status ENUM('Pass', 'Rework', 'Reject') NOT NULL,
+    status ENUM('Pass', 'Rework', 'Reject', 'Rework Pass') NOT NULL,
     quantity INT DEFAULT 1,
     check_date DATE NOT NULL,
     check_time TIME NOT NULL,

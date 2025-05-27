@@ -54,6 +54,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $response = ['success' => false, 'message' => ''];
         
         try {
+            // Debug log
+            error_log('DESMA QC Record Request: ' . print_r($_POST, true));
+            
             // Validate style number format (4 digits)
             if (!preg_match('/^\d{4}$/', $_POST['style_no'])) {
                 throw new Exception('Style number must be exactly 4 digits');
@@ -76,8 +79,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 throw new Exception('Missing required fields');
             }
 
-            // For rework/reject, validate defect
-            if ($_POST['status'] !== 'Pass' && empty($_POST['defect_id'])) {
+            // Only require defect for Rework and Reject status
+            if (($_POST['status'] === 'Rework' || $_POST['status'] === 'Reject') && empty($_POST['defect_id'])) {
                 throw new Exception('Defect is required for rework/reject');
             }
 
@@ -103,6 +106,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $_POST['quantity'] ?? 1
             ];
 
+            // Debug log
+            error_log('DESMA QC Record SQL Parameters: ' . print_r($params, true));
+
             $result = $stmt->execute($params);
 
             if (!$result) {
@@ -117,6 +123,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $response['message'] = 'Error saving DESMA QC record: ' . $e->getMessage();
             error_log('DESMA QC Record Error: ' . $e->getMessage());
         }
+        
+        // Debug log
+        error_log('DESMA QC Record Response: ' . json_encode($response));
         
         echo json_encode($response);
         exit();
@@ -573,9 +582,48 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 gap: 6px;
             }
         }
+
+        /* Add these styles to your existing CSS */
+        .loading-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 9999;
+        }
+
+        .loading-spinner {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+        }
+
+        .loading-spinner i {
+            font-size: 2rem;
+            color: var(--primary-color);
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
     </style>
 </head>
 <body>
+    <div class="loading-overlay">
+        <div class="loading-spinner">
+            <i class="fas fa-spinner"></i>
+            <p>Processing request...</p>
+        </div>
+    </div>
+
     <nav class="navbar navbar-expand-lg navbar-dark">
         <div class="container">
             <a class="navbar-brand" href="dashboard.php">Boots QC System</a>
@@ -957,8 +1005,56 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             });
         });
 
-        // Update complete button click handler
-        completeBtn.addEventListener('click', function() {
+        // Add these utility functions at the top of your script
+        const showLoading = () => {
+            document.querySelector('.loading-overlay').style.display = 'flex';
+        };
+
+        const hideLoading = () => {
+            document.querySelector('.loading-overlay').style.display = 'none';
+        };
+
+        const handleSecurityCheck = async (formData, retryCount = 0) => {
+            if (retryCount >= 3) {
+                throw new Error('Unable to complete the request. Please refresh the page and try again.');
+            }
+
+            try {
+                const response = await fetch('desma.php', {
+                    method: 'POST',
+                    body: formData,
+                    credentials: 'same-origin'
+                });
+
+                const text = await response.text();
+                
+                // Check if it's the security check page
+                if (text.includes('infinityfree.net/errors/') || text.includes('aes.js')) {
+                    console.log(`Security check detected, retry attempt ${retryCount + 1}`);
+                    // Wait for 2 seconds before retrying
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                    return handleSecurityCheck(formData, retryCount + 1);
+                }
+
+                // Try to parse as JSON
+                try {
+                    return JSON.parse(text);
+                } catch (e) {
+                    console.error('Server response:', text);
+                    throw new Error('Invalid response from server. Please try again.');
+                }
+            } catch (error) {
+                if (retryCount < 2) {
+                    console.log(`Request failed, retry attempt ${retryCount + 1}`);
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                    return handleSecurityCheck(formData, retryCount + 1);
+                }
+                throw error;
+            }
+        };
+
+        // Update the complete button click handler
+        completeBtn.addEventListener('click', async function() {
             const styleNo = document.getElementById('style_no').value;
             const poNo = document.getElementById('po_no').value;
             
@@ -989,12 +1085,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             formData.append('status', currentStatus);
             if (defectId) formData.append('defect_id', defectId);
 
-            fetch('desma.php', {
-                method: 'POST',
-                body: formData
-            })
-            .then(response => response.json())
-            .then(data => {
+            showLoading();
+
+            try {
+                const data = await handleSecurityCheck(formData);
+                
                 if (data.success) {
                     sessionStorage.setItem('lastStyleNo', data.style_no);
                     sessionStorage.setItem('lastPoNo', data.po_no);
@@ -1017,11 +1112,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 } else {
                     alert('Error: ' + (data.message || 'Unknown error occurred'));
                 }
-            })
-            .catch(error => {
+            } catch (error) {
                 console.error('Error:', error);
-                alert('Error saving DESMA QC record: ' + error.message);
-            });
+                alert(error.message || 'Error saving DESMA QC record. Please try again.');
+            } finally {
+                hideLoading();
+            }
         });
 
         // Restore values on page load

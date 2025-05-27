@@ -4,15 +4,28 @@ ini_set('display_startup_errors', 1);
 error_reporting(E_ALL);
 
 require_once 'db.php';
-require 'vendor/autoload.php'; // You'll need to install PhpSpreadsheet via Composer
 
-use PhpOffice\PhpSpreadsheet\Spreadsheet;
-use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
-use PhpOffice\PhpSpreadsheet\Cell\Coordinate;
+// Debug dump of server and post data (Only for GET requests)
+// if ($_SERVER['REQUEST_METHOD'] === 'GET') {
+//     echo "<h3>Debug: Server and Post Data</h3>";
+//     echo "<pre>Server:\n"; var_dump($_SERVER); echo "</pre>";
+//     echo "<pre>POST:\n"; var_dump($_POST); echo "</pre>";
+// }
 
+// echo "Debug 1: After autoload.php<br>"; // Debug checkpoint 1
+
+// echo "Debug: \$_SESSION['admin_id'] is: "; var_dump($_SESSION['admin_id']); echo "<br>"; // Debug session variable
+
+// Check admin session
 if (!isset($_SESSION['admin_id'])) {
+    // Print debug message indicating session is not set
+    // echo "Debug: Admin session is NOT set. Redirecting to login.<br>";
+    // Then redirect
     header('Location: admin_login.php');
     exit();
+} else {
+    // Print debug message indicating session is set
+    // echo "Debug: Admin session IS set. Proceeding.<br>";
 }
 
 $success = '';
@@ -22,6 +35,14 @@ $error = '';
 $stmt_defects = $pdo->query("SELECT id, defect FROM defects ORDER BY defect");
 $defects = $stmt_defects->fetchAll(PDO::FETCH_ASSOC);
 $defect_names = array_column($defects, 'defect');
+
+// echo "Debug 2: After fetching defects<br>"; // Debug checkpoint 2
+
+// Debug checks for POST request and generate_report (Only for GET requests)
+// if ($_SERVER['REQUEST_METHOD'] === 'GET') {
+//     echo "Debug: REQUEST_METHOD is: " . $_SERVER['REQUEST_METHOD'] . "<br>";
+//     echo "Debug: isset(\$_POST['generate_report']) is: "; var_dump(isset($_POST['generate_report'])); echo "<br>";
+// }
 
 // Handle report generation
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['generate_report'])) {
@@ -82,36 +103,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['generate_report'])) {
         $stmt->execute($params);
         $records = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-        // Get unique operation-defect combinations
-        $operation_defects = [];
-        foreach ($records as $record) {
-            if (!empty($record['defect_name'])) {
-                $key = $record['operation'] ? $record['operation'] . ' - ' . $record['defect_name'] : $record['defect_name'];
-                if (!isset($operation_defects[$key])) {
-                    $operation_defects[$key] = 0;
-                }
-            }
-        }
-
-        // Aggregate data by Date, Style No, and PO No
+        // Aggregate data by Date, Style No, PO No, and EFC No (EPF No)
         $aggregated_data = [];
+        // Keep track of all possible defect keys encountered in the selected date range for headers
+        $all_possible_defect_keys_set = [];
+
         foreach ($records as $record) {
             $date = date('Y-m-d', strtotime($record['created_at']));
             $style_no = $record['style_no'];
             $po_no = $record['po_no'];
-            $key = $date . '-' . $style_no . '-' . $po_no;
+            $efc_no = $record['EFC_no'] ?? 'N/A'; // Get EFC_no (EPF No)
+
+            // Create a unique key including date, style, po, and efc_no
+            $key = $date . '-' . $style_no . '-' . $po_no . '-' . $efc_no;
 
             if (!isset($aggregated_data[$key])) {
                 $aggregated_data[$key] = [
                     'date' => $date,
                     'style_no' => $style_no,
                     'po_no' => $po_no,
-                    'EFC_no' => $record['EFC_no'] ?? 'N/A',
+                    'EFC_no' => $efc_no,
                     'total_qty' => 0,
                     'pass' => 0,
+                    'rework_pass' => 0,
                     'reject' => 0,
                     'rework' => 0,
-                    'defects' => array_fill_keys(array_keys($operation_defects), 0)
+                    'rework_defects' => [], // Initialize rework defects array for this row
+                    'reject_defects' => []  // Initialize reject defects array for this row
                 ];
             }
 
@@ -122,76 +140,124 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['generate_report'])) {
                 case 'Pass':
                     $aggregated_data[$key]['pass'] += $quantity;
                     break;
+                case 'Rework Pass':
+                    $aggregated_data[$key]['rework_pass'] += $quantity;
+                    break;
                 case 'Reject':
                     $aggregated_data[$key]['reject'] += $quantity;
                     if (!empty($record['defect_name'])) {
-                        $defect_key = $record['operation'] ? $record['operation'] . ' - ' . $record['defect_name'] : $record['defect_name'];
-                        $aggregated_data[$key]['defects'][$defect_key] += $quantity;
+                        $defect_key = $record['operation'] ? $record['operation'] . ' - '. $record['defect_name'] : $record['defect_name'];
+                        // Sum quantity for this specific defect under Reject status within this row's context
+                        $aggregated_data[$key]['reject_defects'][$defect_key] = ($aggregated_data[$key]['reject_defects'][$defect_key] ?? 0) + $quantity;
+                        $all_possible_defect_keys_set[$defect_key] = true; // Add to the set of all possible defect keys
                     }
                     break;
                 case 'Rework':
                     $aggregated_data[$key]['rework'] += $quantity;
                     if (!empty($record['defect_name'])) {
-                        $defect_key = $record['operation'] ? $record['operation'] . ' - ' . $record['defect_name'] : $record['defect_name'];
-                        $aggregated_data[$key]['defects'][$defect_key] += $quantity;
+                         $defect_key = $record['operation'] ? $record['operation'] . ' - '. $record['defect_name'] : $record['defect_name'];
+                        // Sum quantity for this specific defect under Rework status within this row's context
+                        $aggregated_data[$key]['rework_defects'][$defect_key] = ($aggregated_data[$key]['rework_defects'][$defect_key] ?? 0) + $quantity;
+                         $all_possible_defect_keys_set[$defect_key] = true; // Add to the set of all possible defect keys
                     }
                     break;
             }
         }
 
-        // Create new spreadsheet
-        $spreadsheet = new Spreadsheet();
-        $sheet = $spreadsheet->getActiveSheet();
-
-        // Set headers
-        $headers = ['Date', 'Style No', 'PO No', 'EFC No', 'Total QTY', 'PASS', 'REJECT', 'REWORK'];
-        $headers = array_merge($headers, array_keys($operation_defects));
-        
-        $col = 1;
-        foreach ($headers as $header) {
-            $sheet->setCellValue(Coordinate::stringFromColumnIndex($col) . '1', $header);
-            $sheet->getStyle(Coordinate::stringFromColumnIndex($col) . '1')->getFont()->setBold(true);
-            $col++;
-        }
-
-        // Add data
-        $row = 2;
-        foreach ($aggregated_data as $data) {
-            $col = 1;
-            $sheet->setCellValue(Coordinate::stringFromColumnIndex($col++) . $row, $data['date']);
-            $sheet->setCellValue(Coordinate::stringFromColumnIndex($col++) . $row, $data['style_no']);
-            $sheet->setCellValue(Coordinate::stringFromColumnIndex($col++) . $row, $data['po_no']);
-            $sheet->setCellValue(Coordinate::stringFromColumnIndex($col++) . $row, $data['EFC_no']);
-            $sheet->setCellValue(Coordinate::stringFromColumnIndex($col++) . $row, $data['total_qty']);
-            $sheet->setCellValue(Coordinate::stringFromColumnIndex($col++) . $row, $data['pass']);
-            $sheet->setCellValue(Coordinate::stringFromColumnIndex($col++) . $row, $data['reject']);
-            $sheet->setCellValue(Coordinate::stringFromColumnIndex($col++) . $row, $data['rework']);
-
-            foreach ($operation_defects as $defect_key => $value) {
-                $sheet->setCellValue(Coordinate::stringFromColumnIndex($col++) . $row, $data['defects'][$defect_key] ?? 0);
+        // Identify all unique defect keys that appeared in any Rework or Reject record
+        $all_unique_defect_keys_set = [];
+        foreach ($records as $record) {
+             if (!empty($record['defect_name'])) {
+                $key = $record['operation'] ? $record['operation'] . ' - '. $record['defect_name'] : $record['defect_name'];
+                if ($record['status'] === 'Rework' || $record['status'] === 'Reject') {
+                    $all_unique_defect_keys_set[$key] = true;
+                }
             }
-            $row++;
         }
 
-        // Auto-size columns
-        foreach (range(1, Coordinate::columnIndexFromString($sheet->getHighestColumn())) as $col) {
-            $sheet->getColumnDimension(Coordinate::stringFromColumnIndex($col))->setAutoSize(true);
+        // Build the ordered list of all unique defect keys
+        $all_unique_defect_keys = array_keys($all_unique_defect_keys_set);
+        uasort($all_unique_defect_keys, function($a, $b) {
+            $name_a = strpos($a, ' - ') !== false ? explode(' - ', $a)[1] : $a;
+            $name_b = strpos($b, ' - ') !== false ? explode(' - ', $b)[1] : $b;
+            return strcmp($name_a, $name_b);
+        });
+
+        // Prepare data for Google Sheets
+        $headers = ['Date', 'Style No', 'PO No', 'EPF No', 'Total QTY', 'PASS', 'REWORK PASS', 'REWORK'];
+
+        // Add Rework defect headers
+        foreach ($all_unique_defect_keys as $defect_key) {
+            $defect_name_only = strpos($defect_key, ' - ') !== false ? explode(' - ', $defect_key)[1] : $defect_key;
+            $headers[] = trim($defect_name_only);
+        }
+
+         // Add REJECT header
+        $headers[] = 'REJECT';
+
+        // Add Reject defect headers
+        foreach ($all_unique_defect_keys as $defect_key) {
+            $defect_name_only = strpos($defect_key, ' - ') !== false ? explode(' - ', $defect_key)[1] : $defect_key;
+            $headers[] = trim($defect_name_only);
+        }
+
+        $data = [];
+        $data[] = $headers; // Add headers as first row
+        
+        foreach ($aggregated_data as $row) {
+            $row_data = [
+                $row['date'],
+                $row['style_no'],
+                $row['po_no'],
+                $row['EFC_no'],
+                $row['total_qty'],
+                $row['pass'],
+                $row['rework_pass'],
+                $row['rework'] // Value for the REWORK status column
+            ];
+            
+            // Add Rework defect quantities
+            foreach ($all_unique_defect_keys as $defect_key) {
+                $row_data[] = $row['rework_defects'][$defect_key] ?? 0;
+            }
+
+             // Add REJECT total quantity
+            $row_data[] = $row['reject'];
+
+            // Add Reject defect quantities
+            foreach ($all_unique_defect_keys as $defect_key) {
+                $row_data[] = $row['reject_defects'][$defect_key] ?? 0;
+            }
+            
+            $data[] = $row_data;
+        }
+
+        // Debug log the aggregated data
+        error_log('Aggregated data before CSV generation: ' . print_r($aggregated_data, true));
+
+        // Convert data to CSV format
+        $csv_data = '';
+        foreach ($data as $rowIndex => $row) {
+            $csv_data .= implode(',', array_map(function($value, $colIndex) use ($rowIndex) {
+                // Do not wrap 'Date' column (first column) in quotes for any row
+                if ($colIndex === 0) {
+                    return $value;
+                } else {
+                    return '"' . str_replace('"', '""', $value) . '"';
+                }
+            }, $row, array_keys($row))) . "\n";
         }
 
         // Create filename
-        $filename = ($report_type === 'desma' ? 'DESMA_' : 'QC_') . 'Report_' . date('Y-m-d') . '.xlsx';
-        
-        // Clear output buffer
-        ob_clean();
+        $filename = ($report_type === 'desma' ? 'DESMA_' : 'QC_') . 'Report_' . date('Y-m-d') . '.csv';
         
         // Set headers for download
-        header('Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        header('Content-Type: text/csv');
         header('Content-Disposition: attachment;filename="' . $filename . '"');
         header('Cache-Control: max-age=0');
 
-        // Save file
-        $writer = new Xlsx($spreadsheet);
-        $writer->save('php://output');
+        // Output CSV data
+        echo $csv_data;
         exit();
 
     } catch (Exception $e) {
@@ -211,6 +277,7 @@ if (!isset($_POST['generate_report'])) {
     <title>Boots QC - Reports</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
     <style>
         :root {
             --primary-color: #2c3e50;
@@ -263,6 +330,49 @@ if (!isset($_POST['generate_report'])) {
         .nav-link:hover, .nav-link.active {
             color: white !important;
         }
+        
+        /* Date picker styles */
+        .flatpickr-calendar {
+            width: 100% !important;
+            max-width: 300px !important;
+        }
+        
+        .flatpickr-day {
+            height: 35px !important;
+            line-height: 35px !important;
+        }
+        
+        .form-control[readonly] {
+            background-color: #fff;
+            cursor: pointer;
+        }
+        
+        @media (max-width: 768px) {
+            .flatpickr-calendar {
+                position: fixed !important;
+                top: 50% !important;
+                left: 50% !important;
+                transform: translate(-50%, -50%) !important;
+                z-index: 9999 !important;
+            }
+            
+            .flatpickr-months {
+                height: 40px !important;
+            }
+            
+            .flatpickr-month {
+                height: 40px !important;
+            }
+            
+            .flatpickr-current-month {
+                padding: 5px 0 !important;
+            }
+            
+            .flatpickr-weekday {
+                height: 30px !important;
+                line-height: 30px !important;
+            }
+        }
     </style>
 </head>
 <body>
@@ -284,6 +394,11 @@ if (!isset($_POST['generate_report'])) {
                     <li class="nav-item">
                         <a class="nav-link active" href="reports.php">
                             <i class="fas fa-chart-bar me-1"></i>Reports
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="manage_users.php">
+                            <i class="fas fa-users me-1"></i>Manage Users
                         </a>
                     </li>
                 </ul>
@@ -320,25 +435,23 @@ if (!isset($_POST['generate_report'])) {
                 <form method="POST" class="row g-3">
                     <div class="col-md-3">
                         <label for="start_date" class="form-label">Start Date</label>
-                        <input type="date" class="form-control" id="start_date" name="start_date" 
-                               value="<?php echo date('Y-m-d', strtotime('-30 days')); ?>" required>
+                        <input type="text" class="form-control datepicker" id="start_date" name="start_date" 
+                               value="<?php echo date('Y-m-d', strtotime('-30 days')); ?>" required readonly>
                     </div>
                     <div class="col-md-3">
                         <label for="end_date" class="form-label">End Date</label>
-                        <input type="date" class="form-control" id="end_date" name="end_date" 
-                               value="<?php echo date('Y-m-d'); ?>" required>
+                        <input type="text" class="form-control datepicker" id="end_date" name="end_date" 
+                               value="<?php echo date('Y-m-d'); ?>" required readonly>
                     </div>
                     <div class="col-md-3">
                         <label for="report_type" class="form-label">Report Type</label>
                         <select class="form-select" id="report_type" name="report_type" required>
-                            <option value="qc">QC Records</option>
                             <option value="desma">DESMA Records</option>
-                            <option value="both">Both Records</option>
                         </select>
                     </div>
                     <div class="col-md-3 d-flex align-items-end">
                         <button type="submit" name="generate_report" class="btn btn-primary w-100">
-                            <i class="fas fa-download me-2"></i>Generate Excel Report
+                            <i class="fas fa-download me-2"></i>Generate CSV Report
                         </button>
                     </div>
                 </form>
@@ -347,6 +460,27 @@ if (!isset($_POST['generate_report'])) {
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            flatpickr(".datepicker", {
+                dateFormat: "Y-m-d",
+                allowInput: true,
+                mobile: true,
+                disableMobile: false,
+                onOpen: function(selectedDates, dateStr, instance) {
+                    // Ensure calendar is visible on mobile
+                    if (window.innerWidth <= 768) {
+                        instance.calendarContainer.style.position = 'fixed';
+                        instance.calendarContainer.style.top = '50%';
+                        instance.calendarContainer.style.left = '50%';
+                        instance.calendarContainer.style.transform = 'translate(-50%, -50%)';
+                        instance.calendarContainer.style.zIndex = '9999';
+                    }
+                }
+            });
+        });
+    </script>
 </body>
 </html>
 <?php

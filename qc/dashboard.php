@@ -1,6 +1,17 @@
 <?php
 require_once 'db.php';
 
+// Set timezone to Asia/Colombo
+date_default_timezone_set('Asia/Colombo');
+
+// Set MySQL timezone
+$pdo->exec("SET time_zone = '+05:30'");
+
+// Debug logging for timezone
+error_log('PHP Timezone: ' . date_default_timezone_get());
+error_log('Current date: ' . date('Y-m-d'));
+error_log('Current time: ' . date('H:i:s'));
+
 if (!isset($_SESSION['user_id'])) {
     header('Location: index.php');
     exit();
@@ -11,58 +22,38 @@ $stmt = $pdo->prepare("SELECT EFC_no, name FROM users WHERE id = ?");
 $stmt->execute([$_SESSION['user_id']]);
 $user = $stmt->fetch();
 
-// Get most common operations (last 30 days) or first 10 operations
-$operations = $pdo->query("
-    WITH operation_counts AS (
-        SELECT o.id, o.operation, COUNT(*) as count 
-        FROM qc_records qr 
-        JOIN operations o ON qr.operation_id = o.id 
-        WHERE qr.check_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
-        GROUP BY o.id, o.operation
-    )
-    SELECT id, operation, count
-    FROM operation_counts
-    ORDER BY count DESC
-    LIMIT 10
-")->fetchAll();
+// Get all defects from the database
+$po_no = $_GET['po_no'] ?? '';
+$check_date = date('Y-m-d'); // Use current date instead of hardcoded date
 
-// If no operations found in last 30 days, get first 10 operations
-if (empty($operations)) {
-    $operations = $pdo->query("
-        SELECT id, operation, 0 as count
-        FROM operations 
-        ORDER BY operation 
-        LIMIT 10
-    ")->fetchAll();
-}
+// Debug log the query parameters
+error_log('Defect count query - PO: ' . $po_no . ', Date: ' . $check_date);
 
-// Get most common defects (last 30 days) or first 10 defects
-$defects = $pdo->query("
-    WITH defect_counts AS (
-        SELECT d.id, d.defect, COUNT(*) as count 
-        FROM qc_records qr 
-        JOIN defects d ON qr.defect_id = d.id 
-        WHERE qr.check_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
-        GROUP BY d.id, d.defect
-    )
-    SELECT id, defect, count
-    FROM defect_counts
-    ORDER BY count DESC
-    LIMIT 10
-")->fetchAll();
+$stmt = $pdo->prepare("
+    SELECT 
+        d.id,
+        d.defect,
+        COALESCE((
+            SELECT COUNT(*) 
+            FROM qc_desma_records qr 
+            WHERE qr.defect_id = d.id 
+            AND qr.po_no = ? 
+            AND DATE(qr.check_date) = ?
+        ), 0) as count
+    FROM defects d
+    ORDER BY d.defect
+");
 
-// If no defects found in last 30 days, get first 10 defects
-if (empty($defects)) {
-    $defects = $pdo->query("
-        SELECT id, defect, 0 as count
-        FROM defects 
-        ORDER BY defect 
-        LIMIT 10
-    ")->fetchAll();
-}
+// Debug log the query execution
+error_log('Executing defect count query with parameters: ' . print_r([$po_no, $check_date], true));
 
-// Get all operations and defects for search
-$allOperations = $pdo->query("SELECT id, operation FROM operations ORDER BY operation")->fetchAll();
+$stmt->execute([$po_no, $check_date]);
+$defects = $stmt->fetchAll();
+
+// Debug log the results
+error_log('Defect count results: ' . print_r($defects, true));
+
+// Get all defects for search
 $allDefects = $pdo->query("SELECT id, defect FROM defects ORDER BY defect")->fetchAll();
 
 // Get today's QC statistics
@@ -72,7 +63,7 @@ $stats = $pdo->prepare("
         SUM(CASE WHEN status = 'Pass' THEN 1 ELSE 0 END) as pass_count,
         SUM(CASE WHEN status = 'Rework' THEN 1 ELSE 0 END) as rework_count,
         SUM(CASE WHEN status = 'Reject' THEN 1 ELSE 0 END) as reject_count
-    FROM qc_records 
+    FROM qc_desma_records 
     WHERE qcc_id = ? AND check_date = ?
 ");
 $stats->execute([$_SESSION['user_id'], $today]);
@@ -96,6 +87,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $response = ['success' => false, 'message' => ''];
         
         try {
+            // Debug log
+            error_log('DESMA QC Record Request: ' . print_r($_POST, true));
+            
             // Validate style number format (4 digits)
             if (!preg_match('/^\d{4}$/', $_POST['style_no'])) {
                 throw new Exception('Style number must be exactly 4 digits');
@@ -113,23 +107,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 throw new Exception('Invalid style number or PO number combination');
             }
 
-            // Debug log
-            error_log('POST data: ' . print_r($_POST, true));
-            error_log('Session data: ' . print_r($_SESSION, true));
-
             // Validate required fields
             if (empty($_POST['style_no']) || empty($_POST['po_no']) || empty($_POST['status'])) {
-                throw new Exception('Missing required fields: ' . 
-                    'style_no=' . (empty($_POST['style_no']) ? 'empty' : 'set') . 
-                    ', po_no=' . (empty($_POST['po_no']) ? 'empty' : 'set') . 
-                    ', status=' . (empty($_POST['status']) ? 'empty' : 'set'));
+                throw new Exception('Missing required fields');
             }
 
-            // For rework/reject, validate operation and defect
-            if ($_POST['status'] !== 'Pass' && (empty($_POST['operation_id']) || empty($_POST['defect_id']))) {
-                throw new Exception('Operation and defect are required for rework/reject: ' . 
-                    'operation_id=' . (empty($_POST['operation_id']) ? 'empty' : 'set') . 
-                    ', defect_id=' . (empty($_POST['defect_id']) ? 'empty' : 'set'));
+            // Debug log for status and defect validation
+            error_log('Status: ' . $_POST['status']);
+            error_log('Defect ID: ' . (isset($_POST['defect_id']) ? $_POST['defect_id'] : 'not set'));
+
+            // FIXED: Only require defect for 'Rework' and 'Reject', not for 'Pass' or 'Rework Pass'
+            // Debug logging to see what's happening
+            error_log('DEBUG - Status received: "' . $_POST['status'] . '"');
+            error_log('DEBUG - Status === Rework: ' . ($_POST['status'] === 'Rework' ? 'true' : 'false'));
+            error_log('DEBUG - Status === Reject: ' . ($_POST['status'] === 'Reject' ? 'true' : 'false'));
+            error_log('DEBUG - Defect ID: ' . (isset($_POST['defect_id']) ? $_POST['defect_id'] : 'NOT SET'));
+
+            // Only require defect for 'Rework' and 'Reject' status
+            if (($_POST['status'] === 'Rework' || $_POST['status'] === 'Reject') && empty($_POST['defect_id'])) {
+                throw new Exception('Defect is required for rework/reject');
             }
 
             // Validate session
@@ -138,16 +134,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             $stmt = $pdo->prepare("
-                INSERT INTO qc_records (
-                    style_no, po_no, operation_id, defect_id, 
+                INSERT INTO qc_desma_records (
+                    style_no, po_no, defect_id, 
                     user_id, qcc_id, status, quantity, check_date, check_time
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURDATE(), CURTIME())
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_DATE(), CURRENT_TIME())
             ");
             
             $params = [
                 $_POST['style_no'],
                 $_POST['po_no'],
-                $_POST['operation_id'] ?? null,
                 $_POST['defect_id'] ?? null,
                 $_SESSION['user_id'],
                 $_SESSION['user_id'],
@@ -155,8 +150,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $_POST['quantity'] ?? 1
             ];
 
-            // Debug log
-            error_log('SQL Parameters: ' . print_r($params, true));
+            // Debug log the insert parameters
+            error_log('Inserting QC record with parameters: ' . print_r($params, true));
+            error_log('Current server date: ' . date('Y-m-d'));
+            error_log('Current server time: ' . date('H:i:s'));
 
             $result = $stmt->execute($params);
 
@@ -165,13 +162,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             
             $response['success'] = true;
-            $response['message'] = 'QC record saved successfully';
+            $response['message'] = 'DESMA QC record saved successfully';
             $response['style_no'] = $_POST['style_no'];
             $response['po_no'] = $_POST['po_no'];
         } catch (Exception $e) {
-            $response['message'] = 'Error saving QC record: ' . $e->getMessage();
-            error_log('QC Record Error: ' . $e->getMessage());
+            $response['message'] = 'Error saving DESMA QC record: ' . $e->getMessage();
+            error_log('DESMA QC Record Error: ' . $e->getMessage());
         }
+        
+        // Debug log
+        error_log('DESMA QC Record Response: ' . json_encode($response));
         
         echo json_encode($response);
         exit();
@@ -183,7 +183,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Boots QC - Dashboard</title>
+    <title>Boots QC - DESMA</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600&display=swap" rel="stylesheet">
@@ -264,79 +264,120 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         .search-section {
             background: white;
-            border-radius: 12px;
-            padding: 20px;
-            margin-bottom: 30px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+            border-top: 1px solid var(--border-color);
+            padding: 15px;
         }
 
         .search-section .form-group {
-            margin-bottom: 15px;
+            position: relative;
         }
 
-        .search-section .form-label {
-            font-weight: 500;
-            color: var(--primary-color);
-            margin-bottom: 8px;
-        }
-
-        .search-section .form-control {
-            border-radius: 8px;
+        .search-input {
+            width: 100%;
+            padding: 8px 12px;
             border: 1px solid var(--border-color);
-            padding: 10px 15px;
-            height: auto;
+            border-radius: 4px;
+            margin-bottom: 5px;
         }
 
-        .search-section .btn {
-            padding: 10px 20px;
-            border-radius: 8px;
-            font-weight: 500;
-            height: auto;
+        .search-results {
+            position: absolute;
+            width: 100%;
+            max-height: 200px;
+            overflow-y: auto;
+            background: white;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            z-index: 1000;
+        }
+
+        .search-result-item {
+            padding: 8px 12px;
+            cursor: pointer;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .search-result-item:last-child {
+            border-bottom: none;
+        }
+
+        .search-result-item:hover {
+            background-color: var(--light-bg);
         }
 
         .content-box {
             display: grid;
-            grid-template-columns: 1fr 1fr 300px;
+            grid-template-columns: 1fr 300px;
             gap: 20px;
             margin-bottom: 30px;
         }
 
-        .operation-box {
+        .defect-box {
             background: white;
             border-radius: 12px;
-            padding: 20px;
+            padding: 0;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+            max-height: 600px;
+            overflow-y: auto;
+            position: relative;
+        }
+
+        .defect-box h6 {
+            color: var(--primary-color);
+            font-weight: 600;
+            font-size: 1.1rem;
+            position: sticky;
+            top: 0;
+            background: white;
+            z-index: 2;
+            border-bottom: 1px solid var(--border-color);
+            margin: 0;
+            padding: 15px 15px 10px 15px;
             box-shadow: 0 2px 4px rgba(0,0,0,0.05);
         }
 
-        .operation-box h6 {
-            color: var(--primary-color);
-            font-weight: 600;
-            margin-bottom: 15px;
-            font-size: 1.1rem;
+        .defects-container {
+            position: relative;
+            z-index: 1;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            padding: 15px;
+        }
+
+        .defects-column {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
         }
 
         .selection-row {
-            padding: 12px 15px;
+            padding: 10px 12px;
             border: 1px solid var(--border-color);
             border-radius: 8px;
-            margin-bottom: 10px;
+            margin-bottom: 0;
             cursor: pointer;
             transition: all 0.2s;
             display: flex;
             align-items: center;
             position: relative;
         }
+
         .selection-row:hover {
             background-color: var(--light-bg);
         }
+
         .selection-row.selected {
             background-color: var(--success-color);
             color: white;
             border-color: var(--success-color);
         }
+
         .selection-row.selected label {
             color: white;
         }
+
         .selection-row input[type="radio"] {
             position: absolute;
             opacity: 0;
@@ -347,12 +388,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             margin: 0;
             cursor: pointer;
         }
+
         .selection-row label {
             flex: 1;
             margin-bottom: 0;
             cursor: pointer;
             pointer-events: none;
         }
+
         .selection-row .badge {
             pointer-events: none;
         }
@@ -360,13 +403,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         .image-section {
             background: white;
             border-radius: 12px;
-            padding: 20px;
+            padding: 15px;
             box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+            display: flex;
+            flex-direction: column;
         }
 
         .image-container {
             width: 100%;
-            height: 300px;
+            height: 250px;
             border: 2px dashed var(--border-color);
             border-radius: 8px;
             display: flex;
@@ -374,7 +419,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             justify-content: center;
             overflow: hidden;
             background-color: var(--light-bg);
-            margin-bottom: 20px;
+            margin-bottom: 15px;
         }
 
         .image-container img {
@@ -399,21 +444,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         .action-buttons {
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 10px;
-            margin-bottom: 15px;
+            margin-bottom: 12px;
         }
 
         .action-buttons .btn {
             padding: 12px;
             font-weight: 500;
             border-radius: 8px;
+            font-size: 0.95rem;
+            height: 45px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }
 
         .btn-pass {
             background-color: var(--success-color);
             border-color: var(--success-color);
+            color: white;
+        }
+
+        .btn-rework-pass {
+            background-color: #27ae60;
+            border-color: #27ae60;
             color: white;
         }
 
@@ -430,232 +483,103 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         .btn-complete {
-            width: 100%;
             background-color: var(--secondary-color);
             border-color: var(--secondary-color);
             color: white;
             padding: 12px;
             font-weight: 500;
             border-radius: 8px;
+            font-size: 0.95rem;
+            height: 45px;
         }
 
-        .search-section {
-            margin-top: 15px;
-            padding: 15px;
-            border: 1px solid var(--border-color);
-            border-radius: 8px;
-            background-color: var(--light-bg);
+        .action-buttons .row {
+            margin: 0;
         }
 
-        .search-input {
-            margin-bottom: 10px;
+        .action-buttons .col-6 {
+            padding: 0 4px;
         }
 
-        .search-results {
-            max-height: 200px;
-            overflow-y: auto;
-            border: 1px solid var(--border-color);
-            border-radius: 8px;
-            background-color: white;
+        .admin-link {
+            text-align: center;
+            margin-top: 10px;
+            padding-top: 10px;
+            border-top: 1px solid var(--border-color);
         }
 
-        .search-result-item {
-            padding: 10px 15px;
-            cursor: pointer;
-            border-bottom: 1px solid var(--border-color);
-            transition: all 0.2s;
+        .admin-link a {
+            color: var(--primary-color);
+            text-decoration: none;
+            font-size: 0.9rem;
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
         }
 
-        .search-result-item:hover {
-            background-color: var(--light-bg);
+        .admin-link a:hover {
+            color: var(--secondary-color);
         }
 
-        .search-result-item:last-child {
-            border-bottom: none;
-        }
-
-        .operation-box.disabled,
         .defect-box.disabled {
             opacity: 0.6;
             pointer-events: none;
         }
 
-        .operation-box.disabled .selection-row,
         .defect-box.disabled .selection-row {
             background-color: #f8f9fa;
             cursor: not-allowed;
         }
 
-        .operation-box.disabled .selection-row:hover,
         .defect-box.disabled .selection-row:hover {
             background-color: #f8f9fa;
         }
 
-        .operation-box.disabled .selection-row.selected,
         .defect-box.disabled .selection-row.selected {
             background-color: #e9ecef;
         }
 
-        .complete-btn {
-            background-color: #28a745;
-            color: white;
-            border: none;
-            padding: 10px 20px;
-            border-radius: 5px;
-            font-weight: 500;
-            transition: all 0.3s ease;
-        }
-
-        .complete-btn:hover:not(:disabled) {
-            background-color: #218838;
-            transform: translateY(-1px);
-        }
-
-        .complete-btn:disabled {
-            background-color: #6c757d;
-            cursor: not-allowed;
-            opacity: 0.65;
-        }
-
-        .status-btn {
-            padding: 8px 16px;
-            border-radius: 5px;
-            font-weight: 500;
-            transition: all 0.3s ease;
-        }
-
-        .status-btn.active {
-            transform: translateY(-1px);
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }
-
-        .status-btn.pass.active {
-            background-color: #28a745;
-            color: white;
-        }
-
-        .status-btn.rework.active {
-            background-color: #ffc107;
-            color: #000;
-        }
-
-        .status-btn.reject.active {
-            background-color: #dc3545;
-            color: white;
-        }
-
-        /* Responsive Design */
+        /* Responsive styles */
         @media (max-width: 1200px) {
             .content-box {
-                grid-template-columns: 1fr 1fr 250px;
+                grid-template-columns: 1fr 280px;
                 gap: 15px;
             }
 
+            .defect-box {
+                max-height: 500px;
+            }
+
             .image-container {
-                height: 250px;
+                height: 220px;
             }
         }
 
         @media (max-width: 992px) {
-            .main-container {
-                padding: 15px;
-            }
-
             .content-box {
-                grid-template-columns: 1fr 1fr;
-                gap: 20px;
-            }
-
-            .image-section {
-                grid-column: span 2;
-            }
-
-            .stats-grid {
-                grid-template-columns: repeat(3, 1fr);
-                gap: 10px;
-            }
-
-            .stat-item {
-                padding: 12px;
-            }
-
-            .stat-item .count {
-                font-size: 1.5rem;
-            }
-
-            .search-section {
-                padding: 15px;
-            }
-
-            .selection-row {
-                padding: 10px 12px;
-            }
-        }
-
-        @media (max-width: 768px) {
-            .content-box {
-                grid-template-columns: 1fr;
+                grid-template-columns: 1fr 250px;
                 gap: 15px;
             }
 
-            .image-section {
-                grid-column: span 1;
+            .defect-box {
+                max-height: 450px;
             }
 
-            .stats-grid {
+            .defects-container {
                 grid-template-columns: 1fr;
-                gap: 10px;
-            }
-
-            .search-section .row {
-                flex-direction: column;
-            }
-
-            .search-section .col-md-4 {
-                width: 100%;
-                margin-bottom: 10px;
-            }
-
-            .search-section .btn {
-                width: 100%;
-            }
-
-            .action-buttons {
-                grid-template-columns: 1fr;
-                gap: 10px;
-            }
-
-            .action-buttons .btn {
-                width: 100%;
             }
 
             .image-container {
                 height: 200px;
             }
 
-            .navbar-brand {
-                font-size: 1.2rem;
-            }
-
-            .selection-row {
-                padding: 8px 10px;
-            }
-
-            .selection-row label {
-                font-size: 0.9rem;
-            }
-
-            .badge {
-                font-size: 0.7rem;
+            .action-buttons {
+                margin-bottom: 10px;
             }
         }
 
-        @media (max-width: 576px) {
+        @media (max-width: 768px) {
             .main-container {
-                padding: 10px;
-            }
-
-            .stats-box {
                 padding: 15px;
             }
 
@@ -663,27 +587,179 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 padding: 12px;
             }
 
-            .operation-box, .defect-box, .image-section {
-                padding: 15px;
+            .content-box {
+                grid-template-columns: 1fr 220px;
+                gap: 12px;
+            }
+
+            .defect-box {
+                max-height: 400px;
             }
 
             .image-container {
                 height: 180px;
             }
 
+            .selection-row {
+                padding: 8px 10px;
+            }
+
+            .action-buttons .btn {
+                padding: 8px;
+                font-size: 0.9rem;
+            }
+
             .btn-complete {
-                padding: 8px 15px;
+                padding: 8px;
                 font-size: 0.9rem;
             }
         }
 
-        /* Add smooth transitions for responsive changes */
-        .content-box, .stats-grid, .search-section, .selection-row, .image-container {
-            transition: all 0.3s ease;
+        @media (max-width: 576px) {
+            .content-box {
+                grid-template-columns: 1fr 200px;
+                gap: 10px;
+            }
+
+            .defect-box h6 {
+                padding: 12px 12px 8px 12px;
+                font-size: 1rem;
+            }
+
+            .defects-container {
+                padding: 12px;
+                gap: 6px;
+            }
+
+            .defects-column {
+                gap: 6px;
+            }
+
+            .selection-row {
+                padding: 6px 8px;
+                font-size: 0.9rem;
+            }
+
+            .image-container {
+                height: 160px;
+            }
+
+            .image-section {
+                padding: 12px;
+            }
+
+            .action-buttons {
+                gap: 6px;
+            }
+        }
+
+        /* Add these styles to your existing CSS */
+        .loading-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 9999;
+        }
+
+        .loading-spinner {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+        }
+
+        .loading-spinner i {
+            font-size: 2rem;
+            color: var(--primary-color);
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .suggestion-list {
+            position: absolute;
+            width: 100%;
+            max-height: 150px;
+            overflow-y: auto;
+            background: white;
+            border: 1px solid var(--border-color);
+            border-radius: 0 0 8px 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            z-index: 1000;
+            display: none;
+        }
+
+        .suggestion-item {
+            padding: 8px 12px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+
+        .suggestion-item:hover {
+            background-color: var(--light-bg);
+        }
+
+        .suggestion-item .badge {
+            float: right;
+            background-color: var(--primary-color);
+        }
+
+        .form-group {
+            position: relative;
+        }
+
+        /* Add these styles */
+        .other-defect-section {
+            border-top: 1px solid var(--border-color);
+            padding-top: 10px;
+        }
+
+        .other-search-box {
+            padding: 10px;
+            background: white;
+        }
+
+        .search-results {
+            position: absolute;
+            width: 100%;
+            max-height: 200px;
+            overflow-y: auto;
+            background: white;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            z-index: 1000;
+            display: none;
+        }
+
+        .search-result-item {
+            padding: 8px 12px;
+            cursor: pointer;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .search-result-item:hover {
+            background-color: var(--light-bg);
         }
     </style>
 </head>
 <body>
+    <div class="loading-overlay">
+        <div class="loading-spinner">
+            <i class="fas fa-spinner"></i>
+            <p>Processing request...</p>
+        </div>
+    </div>
+
     <nav class="navbar navbar-expand-lg navbar-dark">
         <div class="container">
             <a class="navbar-brand" href="dashboard.php">Boots QC System</a>
@@ -693,11 +769,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <div class="collapse navbar-collapse" id="navbarNav">
                 <ul class="navbar-nav me-auto">
                     <li class="nav-item">
-                        <a class="nav-link" href="statistics.php">QC Statistics</a>
+                        <a class="nav-link" href="statistics.php">DESMA Statistics</a>
                     </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="desma.php">DESMA</a>
-                    </li>
+              
                 </ul>
                 <ul class="navbar-nav">
                     <li class="nav-item">
@@ -722,12 +796,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         <div class="form-group">
                             <label for="style_no" class="form-label">Style Number</label>
                             <input type="text" class="form-control" id="style_no" name="style_no" required>
+                            <div class="suggestion-list" id="styleSuggestions"></div>
                         </div>
                     </div>
                     <div class="col-md-4">
                         <div class="form-group">
                             <label for="po_no" class="form-label">PO Number</label>
                             <input type="text" class="form-control" id="po_no" name="po_no" required>
+                            <div class="suggestion-list" id="poSuggestions"></div>
                         </div>
                     </div>
                     <div class="col-md-4">
@@ -742,54 +818,45 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             </div>
 
             <div class="content-box">
-                <div class="operation-box" id="operationBox">
-                    <h6>Operation</h6>
-                    <?php foreach ($operations as $operation): ?>
-                    <div class="selection-row">
-                        <input class="form-check-input operation-check" type="radio" 
-                               name="operation" id="op<?php echo $operation['id']; ?>" 
-                               value="<?php echo $operation['id']; ?>">
-                        <label class="form-check-label" for="op<?php echo $operation['id']; ?>">
-                            <?php echo htmlspecialchars($operation['operation']); ?>
-                            <?php if ($operation['count'] > 0): ?>
-                            <span class="badge bg-secondary ms-2"><?php echo $operation['count']; ?></span>
-                            <?php endif; ?>
-                        </label>
-                    </div>
-                    <?php endforeach; ?>
-                    <div class="selection-row">
-                        <input class="form-check-input operation-check" type="radio" 
-                               name="operation" id="opOther" value="">
-                        <label class="form-check-label" for="opOther">Other</label>
-                    </div>
-                    <div class="search-section" style="display: none;">
-                        <input type="text" class="form-control search-input" placeholder="Search operation...">
-                        <div class="search-results"></div>
-                    </div>
-                </div>
-                <div class="operation-box" id="defectBox">
+                <div class="defect-box">
                     <h6>Defect</h6>
-                    <?php foreach ($defects as $defect): ?>
-                    <div class="selection-row">
-                        <input class="form-check-input defect-check" type="radio" 
-                               name="defect" id="def<?php echo $defect['id']; ?>" 
-                               value="<?php echo $defect['id']; ?>">
-                        <label class="form-check-label" for="def<?php echo $defect['id']; ?>">
-                            <?php echo htmlspecialchars($defect['defect']); ?>
-                            <?php if ($defect['count'] > 0): ?>
-                            <span class="badge bg-secondary ms-2"><?php echo $defect['count']; ?></span>
-                            <?php endif; ?>
-                        </label>
+                    <div class="defects-container">
+                        <div class="defects-column">
+                            <?php
+                            $totalDefects = count($defects);
+                            $halfCount = ceil($totalDefects / 2);
+                            for ($i = 0; $i < $halfCount; $i++) {
+                                $defect = $defects[$i];
+                            ?>
+                            <div class="selection-row" data-value="<?php echo $defect['id']; ?>">
+                                <input type="radio" name="defect" value="<?php echo $defect['id']; ?>" class="me-2">
+                                <span><?php echo $defect['defect']; ?></span>
+                                <span class="badge bg-secondary ms-2"><?php echo $defect['count']; ?></span>
+                            </div>
+                            <?php } ?>
+                        </div>
+                        <div class="defects-column">
+                            <?php
+                            for ($i = $halfCount; $i < $totalDefects; $i++) {
+                                $defect = $defects[$i];
+                            ?>
+                            <div class="selection-row" data-value="<?php echo $defect['id']; ?>">
+                                <input type="radio" name="defect" value="<?php echo $defect['id']; ?>" class="me-2">
+                                <span><?php echo $defect['defect']; ?></span>
+                                <span class="badge bg-secondary ms-2"><?php echo $defect['count']; ?></span>
+                            </div>
+                            <?php } ?>
+                        </div>
                     </div>
-                    <?php endforeach; ?>
-                    <div class="selection-row">
-                        <input class="form-check-input defect-check" type="radio" 
-                               name="defect" id="defOther" value="">
-                        <label class="form-check-label" for="defOther">Other</label>
-                    </div>
-                    <div class="search-section" style="display: none;">
-                        <input type="text" class="form-control search-input" placeholder="Search defect...">
-                        <div class="search-results"></div>
+                    <div class="other-defect-section">
+                        <div class="selection-row">
+                            <input type="radio" name="defect" id="defOther" value="">
+                            <label class="form-check-label" for="defOther">Other</label>
+                        </div>
+                        <div class="other-search-box" style="display: none;">
+                            <input type="text" class="form-control" id="otherDefectSearch" placeholder="Search defect...">
+                            <div id="otherDefectResults" class="search-results"></div>
+                        </div>
                     </div>
                 </div>
                 <div class="image-section">
@@ -800,14 +867,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         </div>
                     </div>
                     <div class="action-buttons">
-                        <button type="button" class="btn btn-pass" data-status="Pass">Pass</button>
-                        <button type="button" class="btn btn-rework" data-status="Rework">Rework</button>
-                        <button type="button" class="btn btn-reject" data-status="Reject">Reject</button>
+                        <div class="row g-2 mb-2">
+                            <div class="col-6">
+                                <button type="button" class="btn btn-pass w-100" data-status="Pass">Pass</button>
+                            </div>
+                            <div class="col-6">
+                                <button type="button" class="btn btn-rework-pass w-100" data-status="Rework Pass">Rework Pass</button>
+                            </div>
+                        </div>
+                        <div class="row g-2">
+                            <div class="col-6">
+                                <button type="button" class="btn btn-rework w-100" data-status="Rework">Rework</button>
+                            </div>
+                            <div class="col-6">
+                                <button type="button" class="btn btn-reject w-100" data-status="Reject">Reject</button>
+                            </div>
+                        </div>
                     </div>
-                    <button type="button" class="btn btn-complete" id="completeBtn" disabled>Complete</button>
-                    <div class="text-center mt-2">
-                        <a href="admin_login.php" class="text-muted" style="font-size: 0.8rem; text-decoration: none;">
-                            <i class="fas fa-lock me-1"></i>Admin Login
+                    <button type="button" class="btn btn-complete w-100 mt-2" id="completeBtn" disabled>Complete</button>
+                    <div class="admin-link">
+                        <a href="admin_login.php">
+                            <i class="fas fa-user-shield"></i>
+                            Admin Login
                         </a>
                     </div>
                 </div>
@@ -818,33 +899,141 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
         let currentStatus = null;
-        const operationBox = document.getElementById('operationBox');
-        const defectBox = document.getElementById('defectBox');
+        const defectBox = document.querySelector('.defect-box');
         const completeBtn = document.getElementById('completeBtn');
 
-        // Store all operations and defects for search
-        const allOperations = <?php echo json_encode($allOperations); ?>;
+        // Store all defects for search
         const allDefects = <?php echo json_encode($allDefects); ?>;
+        const initialDefects = <?php echo json_encode($defects); ?>;
 
-        let selectedOperationId = null;
-        let selectedDefectId = null;
+        // Add this to your existing JavaScript
+        let recentEntries = JSON.parse(localStorage.getItem('recentEntries') || '[]');
+        const maxRecentEntries = 5;
 
-        // Handle image search
-        document.getElementById('styleForm').addEventListener('submit', function(e) {
+        function updateRecentEntries(styleNo, poNo) {
+            const entry = { styleNo, poNo, timestamp: Date.now() };
+            recentEntries = recentEntries.filter(e => !(e.styleNo === styleNo && e.poNo === poNo));
+            recentEntries.unshift(entry);
+            if (recentEntries.length > maxRecentEntries) {
+                recentEntries.pop();
+            }
+            localStorage.setItem('recentEntries', JSON.stringify(recentEntries));
+        }
+
+        function showSuggestions(input, suggestions, type) {
+            const value = input.value.toLowerCase();
+            if (value.length < 2) {
+                suggestions.style.display = 'none';
+                return;
+            }
+
+            const filtered = recentEntries.filter(entry => 
+                entry[type].toLowerCase().includes(value)
+            );
+
+            if (filtered.length > 0) {
+                suggestions.innerHTML = filtered.map(entry => `
+                    <div class="suggestion-item" data-style="${entry.styleNo}" data-po="${entry.poNo}">
+                        ${entry[type]}
+                        <span class="badge">${type === 'styleNo' ? entry.poNo : entry.styleNo}</span>
+                    </div>
+                `).join('');
+                suggestions.style.display = 'block';
+
+                // Add click handlers
+                suggestions.querySelectorAll('.suggestion-item').forEach(item => {
+                    item.addEventListener('click', () => {
+                        document.getElementById('style_no').value = item.dataset.style;
+                        document.getElementById('po_no').value = item.dataset.po;
+                        suggestions.style.display = 'none';
+                        // Trigger image load
+                        loadImage(item.dataset.style, item.dataset.po);
+                    });
+                });
+            } else {
+                suggestions.style.display = 'none';
+            }
+        }
+
+        // Add event listeners for suggestions
+        document.getElementById('style_no').addEventListener('input', function() {
+            showSuggestions(this, document.getElementById('styleSuggestions'), 'styleNo');
+        });
+
+        document.getElementById('po_no').addEventListener('input', function() {
+            showSuggestions(this, document.getElementById('poSuggestions'), 'poNo');
+        });
+
+        // Hide suggestions when clicking outside
+        document.addEventListener('click', function(e) {
+            if (!e.target.closest('.form-group')) {
+                document.getElementById('styleSuggestions').style.display = 'none';
+                document.getElementById('poSuggestions').style.display = 'none';
+            }
+        });
+
+        // Update the form submission handler to save recent entries
+        document.getElementById('styleForm').addEventListener('submit', async function(e) {
             e.preventDefault();
             const styleNo = document.getElementById('style_no').value;
             const poNo = document.getElementById('po_no').value;
-            const imageContainer = document.getElementById('imageContainer');
+            
+            if (!/^\d{4}$/.test(styleNo)) {
+                alert('Style number must be exactly 4 digits');
+                return;
+            }
 
-            fetch('dashboard.php', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                },
-                body: `style_no=${encodeURIComponent(styleNo)}&po_no=${encodeURIComponent(poNo)}`
-            })
-            .then(response => response.json())
-            .then(data => {
+            if (!/^\d{6}$/.test(poNo)) {
+                alert('PO number must be exactly 6 digits');
+                return;
+            }
+
+            // Save to recent entries
+            updateRecentEntries(styleNo, poNo);
+
+            // Rest of your existing form submission code...
+        });
+
+        // Handle form submission
+        document.getElementById('styleForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const styleNo = document.getElementById('style_no').value;
+            const poNo = document.getElementById('po_no').value;
+            
+            if (!/^\d{4}$/.test(styleNo)) {
+                alert('Style number must be exactly 4 digits');
+                return;
+            }
+
+            if (!/^\d{6}$/.test(poNo)) {
+                alert('PO number must be exactly 6 digits');
+                return;
+            }
+
+            // Store values in session storage
+            sessionStorage.setItem('lastStyleNo', styleNo);
+            sessionStorage.setItem('lastPoNo', poNo);
+
+            // Update the URL with the new PO number
+            const url = new URL(window.location.href);
+            url.searchParams.set('po_no', poNo);
+            window.location.href = url.toString();
+        });
+
+        // Load image when style and PO are available
+        async function loadImage(styleNo, poNo) {
+            const imageContainer = document.getElementById('imageContainer');
+            
+            try {
+                const response = await fetch('desma.php', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                    },
+                    body: `style_no=${encodeURIComponent(styleNo)}&po_no=${encodeURIComponent(poNo)}`
+                });
+                
+                const data = await response.json();
                 if (data.image_path) {
                     imageContainer.innerHTML = `<img src="${data.image_path}" alt="Style Image">`;
                 } else {
@@ -855,8 +1044,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         </div>
                     `;
                 }
-            })
-            .catch(error => {
+            } catch (error) {
                 console.error('Error:', error);
                 imageContainer.innerHTML = `
                     <div class="image-placeholder">
@@ -864,7 +1052,269 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         <p>Error loading image</p>
                     </div>
                 `;
+            }
+        }
+
+        // Restore values on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const poNo = urlParams.get('po_no') || sessionStorage.getItem('lastPoNo');
+            const styleNo = sessionStorage.getItem('lastStyleNo');
+            
+            if (poNo) {
+                document.getElementById('po_no').value = poNo;
+            }
+            if (styleNo) {
+                document.getElementById('style_no').value = styleNo;
+            }
+
+            // Load image if both style and PO are available
+            if (styleNo && poNo) {
+                loadImage(styleNo, poNo);
+            }
+        });
+
+        // Update status button handler
+        document.querySelectorAll('.action-buttons .btn').forEach(button => {
+            button.addEventListener('click', async function() {
+                currentStatus = this.dataset.status;
+                
+                // Remove active class from all buttons
+                document.querySelectorAll('.action-buttons .btn').forEach(btn => {
+                    btn.classList.remove('active');
+                });
+                this.classList.add('active');
+
+                // Reset defect selection
+                document.querySelectorAll('.selection-row').forEach(row => {
+                    row.classList.remove('selected');
+                });
+                document.querySelectorAll('input[type="radio"]').forEach(radio => {
+                    radio.checked = false;
+                });
+
+                // Handle instant submission for Pass and Rework Pass
+                if (currentStatus === 'Pass' || currentStatus === 'Rework Pass') {
+                    const styleNo = document.getElementById('style_no').value;
+                    const poNo = document.getElementById('po_no').value;
+                    
+                    console.log('Submitting form with status:', currentStatus);
+                    console.log('Style No:', styleNo);
+                    console.log('PO No:', poNo);
+                    
+                    if (!/^\d{4}$/.test(styleNo)) {
+                        alert('Style number must be exactly 4 digits');
+                        return;
+                    }
+
+                    if (!/^\d{6}$/.test(poNo)) {
+                        alert('PO number must be exactly 6 digits');
+                        return;
+                    }
+
+                    const formData = new FormData();
+                    formData.append('action', 'save');
+                    formData.append('style_no', styleNo);
+                    formData.append('po_no', poNo);
+                    formData.append('status', currentStatus);
+                    formData.append('quantity', 1); // Add default quantity
+
+                    console.log('Form data being sent:', Object.fromEntries(formData));
+
+                    showLoading();
+
+                    try {
+                        const data = await handleSecurityCheck(formData);
+                        console.log('Server response:', data);
+                        
+                        if (data.success) {
+                            // Store values in session storage
+                            sessionStorage.setItem('lastStyleNo', data.style_no);
+                            sessionStorage.setItem('lastPoNo', data.po_no);
+                            
+                            // Update the URL with the current PO number
+                            const url = new URL(window.location.href);
+                            url.searchParams.set('po_no', data.po_no);
+                            window.location.href = url.toString();
+                        } else {
+                            alert('Error: ' + (data.message || 'Unknown error occurred'));
+                        }
+                    } catch (error) {
+                        console.error('Error:', error);
+                        alert(error.message || 'Error saving DESMA QC record. Please try again.');
+                    } finally {
+                        hideLoading();
+                    }
+                } else {
+                    // For Rework/Reject status
+                    document.querySelector('.defect-box').classList.remove('disabled');
+                    completeBtn.disabled = true;
+                }
             });
+        });
+
+        // Handle defect selection
+        document.querySelectorAll('.selection-row').forEach(row => {
+            row.addEventListener('click', function() {
+                if (this.closest('.defect-box').classList.contains('disabled')) {
+                    return;
+                }
+
+                const radio = this.querySelector('input[type="radio"]');
+                const allRows = document.querySelectorAll('.selection-row');
+                
+                allRows.forEach(r => r.classList.remove('selected'));
+                this.classList.add('selected');
+                radio.checked = true;
+
+                // Enable complete button if a defect is selected and status is Rework or Reject
+                if (currentStatus === 'Rework' || currentStatus === 'Reject') {
+                    completeBtn.disabled = false;
+                }
+            });
+        });
+
+        // Initially disable defect box
+        document.querySelector('.defect-box').classList.add('disabled');
+
+        // Update the complete button click handler to only handle Rework/Reject
+        completeBtn.addEventListener('click', async function() {
+            if (currentStatus !== 'Rework' && currentStatus !== 'Reject') {
+                return;
+            }
+
+            const styleNo = document.getElementById('style_no').value;
+            const poNo = document.getElementById('po_no').value;
+            
+            if (!/^\d{4}$/.test(styleNo)) {
+                alert('Style number must be exactly 4 digits');
+                return;
+            }
+
+            if (!/^\d{6}$/.test(poNo)) {
+                alert('PO number must be exactly 6 digits');
+                return;
+            }
+
+            let defectId = null;
+            const selectedDefect = document.querySelector('.selection-row.selected');
+            if (!selectedDefect) {
+                alert('Please select a defect for ' + currentStatus);
+                return;
+            }
+            defectId = selectedDefect.querySelector('input[type="radio"]').value;
+
+            const formData = new FormData();
+            formData.append('action', 'save');
+            formData.append('style_no', styleNo);
+            formData.append('po_no', poNo);
+            formData.append('status', currentStatus);
+            formData.append('defect_id', defectId);
+            formData.append('quantity', 1); // Add default quantity
+
+            showLoading();
+
+            try {
+                const data = await handleSecurityCheck(formData);
+                
+                if (data.success) {
+                    // Store values in session storage
+                    sessionStorage.setItem('lastStyleNo', data.style_no);
+                    sessionStorage.setItem('lastPoNo', data.po_no);
+                    
+                    // Update the URL with the current PO number
+                    const url = new URL(window.location.href);
+                    url.searchParams.set('po_no', data.po_no);
+                    window.location.href = url.toString();
+                } else {
+                    alert('Error: ' + (data.message || 'Unknown error occurred'));
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                alert(error.message || 'Error saving DESMA QC record. Please try again.');
+            } finally {
+                hideLoading();
+            }
+        });
+
+        // Replace the existing "Other" search functionality with this new code
+        document.querySelector('#defOther').addEventListener('change', function() {
+            const searchBox = document.querySelector('.other-search-box');
+            const searchInput = document.getElementById('otherDefectSearch');
+            
+            if (this.checked) {
+                searchBox.style.display = 'block';
+                setTimeout(() => {
+                    searchInput.focus();
+                }, 100);
+            } else {
+                searchBox.style.display = 'none';
+                searchInput.value = '';
+                document.getElementById('otherDefectResults').style.display = 'none';
+            }
+        });
+
+        document.getElementById('otherDefectSearch').addEventListener('input', function() {
+            const searchTerm = this.value.toLowerCase();
+            const resultsDiv = document.getElementById('otherDefectResults');
+            
+            if (searchTerm.length < 2) {
+                resultsDiv.style.display = 'none';
+                return;
+            }
+            
+            const filteredItems = allDefects.filter(item => 
+                item.defect.toLowerCase().includes(searchTerm)
+            );
+            
+            if (filteredItems.length === 0) {
+                resultsDiv.innerHTML = '<div class="search-result-item">No results found</div>';
+            } else {
+                resultsDiv.innerHTML = filteredItems.map(item => `
+                    <div class="search-result-item" data-id="${item.id}">
+                        ${item.defect}
+                    </div>
+                `).join('');
+            }
+            
+            resultsDiv.style.display = 'block';
+            
+            // Add click handlers to search results
+            resultsDiv.querySelectorAll('.search-result-item').forEach(result => {
+                result.addEventListener('click', function() {
+                    if (this.textContent.trim() === 'No results found') return;
+                    
+                    const id = this.dataset.id;
+                    const text = this.textContent.trim();
+                    
+                    // Update the "Other" radio button's label
+                    const otherLabel = document.querySelector('#defOther').nextElementSibling;
+                    otherLabel.textContent = text;
+                    
+                    // Set the value of the "Other" radio button
+                    const otherRadio = otherLabel.previousElementSibling;
+                    otherRadio.value = id;
+                    
+                    // Clear search
+                    document.getElementById('otherDefectSearch').value = '';
+                    resultsDiv.style.display = 'none';
+                    
+                    // Enable complete button if status is not Pass
+                    if (currentStatus !== 'Pass') {
+                        completeBtn.disabled = false;
+                    }
+                });
+            });
+        });
+
+        // Close search results when clicking outside
+        document.addEventListener('click', function(e) {
+            const searchBox = document.querySelector('.other-search-box');
+            const resultsDiv = document.getElementById('otherDefectResults');
+            
+            if (!searchBox.contains(e.target) && !e.target.closest('#defOther')) {
+                resultsDiv.style.display = 'none';
+            }
         });
 
         // Add input validation for style and PO numbers
@@ -876,306 +1326,58 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             this.value = this.value.replace(/[^0-9]/g, '').slice(0, 6);
         });
 
-        // Disable operation and defect checkboxes by default
-        document.querySelectorAll('.operation-check, .defect-check').forEach(checkbox => {
+        // Disable defect checkboxes by default
+        document.querySelectorAll('.defect-check').forEach(checkbox => {
             checkbox.disabled = true;
         });
 
-        // Optimize row selection
-        document.querySelectorAll('.selection-row').forEach(row => {
-            const radio = row.querySelector('input[type="radio"]');
-            const label = row.querySelector('label');
-            
-            // Handle row click
-            row.addEventListener('click', function(e) {
-                e.preventDefault();
-                e.stopPropagation();
-                
-                // Don't allow selection if the box is disabled
-                if (this.closest('.operation-box').classList.contains('disabled')) {
-                    return;
-                }
-                
-                const type = this.closest('.operation-box').id === 'operationBox' ? 'operation' : 'defect';
-                const id = radio.value;
-                
-                // Remove selected class from all rows in this box
-                this.closest('.operation-box').querySelectorAll('.selection-row').forEach(r => {
-                    r.classList.remove('selected');
-                });
-                
-                // Add selected class to clicked row
-                this.classList.add('selected');
-                
-                // Check the radio button
-                radio.checked = true;
-                
-                // Handle "Other" selection
-                if (id === '') {
-                    const searchSection = this.nextElementSibling;
-                    if (searchSection.classList.contains('search-section')) {
-                        searchSection.style.display = 'block';
-                        searchSection.querySelector('.search-input').focus();
-                    }
-                } else {
-                    // Hide search section if it's visible
-                    const searchSection = this.nextElementSibling;
-                    if (searchSection.classList.contains('search-section')) {
-                        searchSection.style.display = 'none';
-                    }
-                }
-                
-                // Enable complete button if both are selected
-                if (currentStatus !== 'Pass') {
-                    const operationSelected = document.querySelector('#operationBox .selection-row.selected');
-                    const defectSelected = document.querySelector('#defectBox .selection-row.selected');
-                    completeBtn.disabled = !(operationSelected && defectSelected);
-                }
-            });
-        });
+        // Add these utility functions at the top of your script
+        const showLoading = () => {
+            document.querySelector('.loading-overlay').style.display = 'flex';
+        };
 
-        // Remove the old event listeners for radio buttons since we're handling clicks on the row
-        document.querySelectorAll('.operation-check, .defect-check').forEach(checkbox => {
-            checkbox.removeEventListener('change', null);
-        });
+        const hideLoading = () => {
+            document.querySelector('.loading-overlay').style.display = 'none';
+        };
 
-        // Handle search inputs
-        document.querySelectorAll('.search-input').forEach(input => {
-            input.addEventListener('input', function() {
-                const type = this.closest('.operation-box').id === 'operationBox' ? 'operation' : 'defect';
-                const searchResults = this.nextElementSibling;
-                const searchTerm = this.value.toLowerCase();
-                
-                if (searchTerm.length < 2) {
-                    searchResults.innerHTML = '';
-                    return;
-                }
-                
-                const items = type === 'operation' ? allOperations : allDefects;
-                const filteredItems = items.filter(item => 
-                    item[type].toLowerCase().includes(searchTerm)
-                );
-                
-                searchResults.innerHTML = filteredItems.map(item => `
-                    <div class="search-result-item" data-id="${item.id}">
-                        ${item[type]}
-                    </div>
-                `).join('');
-                
-                // Handle search result clicks
-                searchResults.querySelectorAll('.search-result-item').forEach(result => {
-                    result.addEventListener('click', function() {
-                        const id = this.dataset.id;
-                        const text = this.textContent.trim();
-                        
-                        // Update the "Other" radio button's label
-                        const otherLabel = this.closest('.operation-box').querySelector(`#${type === 'operation' ? 'op' : 'def'}Other`).nextElementSibling;
-                        otherLabel.textContent = text;
-                        
-                        // Set the value of the "Other" radio button
-                        const otherRadio = otherLabel.previousElementSibling;
-                        otherRadio.value = id;
-                        
-                        // Clear search
-                        this.closest('.search-section').querySelector('.search-input').value = '';
-                        searchResults.innerHTML = '';
-                        
-                        // Enable complete button if both are selected
-                        if (currentStatus !== 'Pass') {
-                            const operationSelected = document.querySelector('#operationBox .selection-row.selected');
-                            const defectSelected = document.querySelector('#defectBox .selection-row.selected');
-                            completeBtn.disabled = !(operationSelected && defectSelected);
-                        }
-                    });
-                });
-            });
-        });
-
-        // Update status button handler
-        document.querySelectorAll('.action-buttons .btn').forEach(button => {
-            button.addEventListener('click', function() {
-                currentStatus = this.dataset.status;
-                
-                // Reset all buttons
-                document.querySelectorAll('.action-buttons .btn').forEach(btn => {
-                    btn.classList.remove('active');
-                });
-                this.classList.add('active');
-
-                // Enable/disable operation and defect boxes
-                if (currentStatus === 'Pass') {
-                    operationBox.classList.add('disabled');
-                    defectBox.classList.add('disabled');
-                    document.querySelectorAll('.operation-check, .defect-check').forEach(checkbox => {
-                        checkbox.disabled = true;
-                        checkbox.checked = false;
-                    });
-                    document.querySelectorAll('.selection-row').forEach(row => {
-                        row.classList.remove('selected');
-                    });
-                    document.querySelectorAll('.search-section').forEach(section => {
-                        if (section.closest('.operation-box')) {
-                            section.style.display = 'none';
-                        }
-                    });
-                    completeBtn.disabled = false;
-                } else {
-                    operationBox.classList.remove('disabled');
-                    defectBox.classList.remove('disabled');
-                    document.querySelectorAll('.operation-check, .defect-check').forEach(checkbox => {
-                        checkbox.disabled = false;
-                    });
-                    completeBtn.disabled = true;
-                }
-            });
-        });
-
-        // Update complete button click handler
-        completeBtn.addEventListener('click', function() {
-            const styleNo = document.getElementById('style_no').value;
-            const poNo = document.getElementById('po_no').value;
-            
-            // Get the selected operation and defect values
-            const selectedOperation = document.querySelector('#operationBox .selection-row.selected');
-            const selectedDefect = document.querySelector('#defectBox .selection-row.selected');
-            const operationId = selectedOperation ? selectedOperation.querySelector('input[type="radio"]').value : null;
-            const defectId = selectedDefect ? selectedDefect.querySelector('input[type="radio"]').value : null;
-
-            // Validate style number format
-            if (!/^\d{4}$/.test(styleNo)) {
-                alert('Style number must be exactly 4 digits');
-                return;
+        const handleSecurityCheck = async (formData, retryCount = 0) => {
+            if (retryCount >= 3) {
+                throw new Error('Unable to complete the request. Please refresh the page and try again.');
             }
 
-            // Validate PO number format
-            if (!/^\d{6}$/.test(poNo)) {
-                alert('PO number must be exactly 6 digits');
-                return;
-            }
-
-            // Debug log for selection values
-            console.log('Selection values:', {
-                operationId,
-                defectId,
-                currentStatus,
-                selectedOperation: selectedOperation ? selectedOperation.textContent.trim() : null,
-                selectedDefect: selectedDefect ? selectedDefect.textContent.trim() : null
-            });
-
-            if (currentStatus !== 'Pass' && (!operationId || !defectId)) {
-                alert('Please select both operation and defect for ' + currentStatus);
-                return;
-            }
-
-            const formData = new FormData();
-            formData.append('action', 'save');
-            formData.append('style_no', styleNo);
-            formData.append('po_no', poNo);
-            formData.append('status', currentStatus);
-            if (operationId) formData.append('operation_id', operationId);
-            if (defectId) formData.append('defect_id', defectId);
-
-            // Debug log
-            console.log('Submitting form data:', {
-                style_no: styleNo,
-                po_no: poNo,
-                status: currentStatus,
-                operation_id: operationId,
-                defect_id: defectId
-            });
-
-            fetch('dashboard.php', {
-                method: 'POST',
-                body: formData
-            })
-            .then(response => {
-                if (!response.ok) {
-                    throw new Error('Network response was not ok');
-                }
-                return response.json();
-            })
-            .then(data => {
-                console.log('Server response:', data);
-                if (data.success) {
-                    // Store style and PO in sessionStorage
-                    sessionStorage.setItem('lastStyleNo', data.style_no);
-                    sessionStorage.setItem('lastPoNo', data.po_no);
-                    
-                    // Reset form
-                    document.querySelectorAll('.operation-check, .defect-check').forEach(checkbox => {
-                        checkbox.disabled = true;
-                        checkbox.checked = false;
-                    });
-                    document.querySelectorAll('.selection-row').forEach(row => {
-                        row.classList.remove('selected');
-                    });
-                    document.querySelectorAll('.action-buttons .btn').forEach(btn => {
-                        btn.classList.remove('active');
-                    });
-                    document.querySelectorAll('.search-section').forEach(section => {
-                        section.style.display = 'none';
-                    });
-                    operationBox.classList.add('disabled');
-                    defectBox.classList.add('disabled');
-                    completeBtn.disabled = true;
-                    currentStatus = null;
-                    
-                    // Reload page to update statistics
-                    location.reload();
-                } else {
-                    alert('Error: ' + (data.message || 'Unknown error occurred'));
-                }
-            })
-            .catch(error => {
-                console.error('Error:', error);
-                alert('Error saving QC record: ' + error.message);
-            });
-        });
-
-        // Add this at the start of your script to restore values on page load
-        document.addEventListener('DOMContentLoaded', function() {
-            const lastStyleNo = sessionStorage.getItem('lastStyleNo');
-            const lastPoNo = sessionStorage.getItem('lastPoNo');
-            
-            if (lastStyleNo && lastPoNo) {
-                document.getElementById('style_no').value = lastStyleNo;
-                document.getElementById('po_no').value = lastPoNo;
-                
-                // Trigger image load
-                const imageContainer = document.getElementById('imageContainer');
-                fetch('dashboard.php', {
+            try {
+                const response = await fetch('desma.php', {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/x-www-form-urlencoded',
-                    },
-                    body: `style_no=${encodeURIComponent(lastStyleNo)}&po_no=${encodeURIComponent(lastPoNo)}`
-                })
-                .then(response => response.json())
-                .then(data => {
-                    if (data.image_path) {
-                        imageContainer.innerHTML = `<img src="${data.image_path}" alt="Style Image">`;
-                    }
+                    body: formData,
+                    credentials: 'same-origin'
                 });
-            }
-        });
 
-        // Handle "Other" radio button clicks
-        document.querySelectorAll('#opOther, #defOther').forEach(radio => {
-            radio.addEventListener('change', function() {
-                const type = this.id.startsWith('op') ? 'operation' : 'defect';
-                const searchSection = this.closest('.operation-box').querySelector('.search-section');
-                const searchInput = searchSection.querySelector('.search-input');
+                const text = await response.text();
                 
-                if (this.checked) {
-                    searchSection.style.display = 'block';
-                    searchInput.focus();
-                } else {
-                    searchSection.style.display = 'none';
-                    searchInput.value = '';
-                    searchSection.querySelector('.search-results').innerHTML = '';
+                // Check if it's the security check page
+                if (text.includes('infinityfree.net/errors/') || text.includes('aes.js')) {
+                    console.log(`Security check detected, retry attempt ${retryCount + 1}`);
+                    // Wait for 2 seconds before retrying
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                    return handleSecurityCheck(formData, retryCount + 1);
                 }
-            });
-        });
+
+                // Try to parse as JSON
+                try {
+                    return JSON.parse(text);
+                } catch (e) {
+                    console.error('Server response:', text);
+                    throw new Error('Invalid response from server. Please try again.');
+                }
+            } catch (error) {
+                if (retryCount < 2) {
+                    console.log(`Request failed, retry attempt ${retryCount + 1}`);
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                    return handleSecurityCheck(formData, retryCount + 1);
+                }
+                throw error;
+            }
+        };
     </script>
 </body>
 </html> 

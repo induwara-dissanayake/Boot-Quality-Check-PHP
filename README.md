@@ -89,4 +89,4 @@ Personal **portfolio project** to showcase skills in Laravel + MySQL + reporting
 ## ✍️ Author
 **Induwara Dissanayake**  
 Email: sahasrainduwara35@gmail.com  
-Portfolio: [your-link](https://portfolio-induwara.vercel.app/)
+Portfolio: https://portfolio-induwara.vercel.app/

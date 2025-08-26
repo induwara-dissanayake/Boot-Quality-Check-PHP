@@ -80,7 +80,7 @@ It replaces paper/Excel forms with a clean interface for operators and superviso
 ---
 
 ## 📌 Project Status
-Personal **portfolio project** to showcase skills in Laravel + MySQL + reporting.
+Developed As a Prototype For A Boot Company
 
 
 ---

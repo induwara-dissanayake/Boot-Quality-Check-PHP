@@ -57,26 +57,24 @@ It replaces paper/Excel forms with a clean interface for operators and superviso
 
 ---
 
-## 🎥 Demo & 📷 Screenshots
 
-> Store media in the repo so recruiters can see it instantly.
 
-**Screenshots** → `assets/screenshots/`  
+## 📷 Screenshots
+
+<p align="left">
+  <img src="assets/screenshots/admin_login.png" width="32%">
+  <img src="assets/screenshots/admin_dashboard.png" width="32%">
+  <img src="assets/screenshots/admin_summary.png" width="32%">
+   <img src="assets/screenshots/chcking_stat.png" width="32%">
+   <img src="assets/screenshots/user_dashboard.png" width="32%">
+   <img src="assets/screenshots/user_login.png" width="32%">
+</p>
+
 **Videos** → `assets/videos/`  
+## 🎥 Demo Video
 
-### Screenshots
-<!-- Replace these filenames with yours -->
-![Login](assets/screenshots/login.png)
-![Quality Check Form](assets/screenshots/qc-form.png)
-![Excel Report with Graphs](assets/screenshots/report-graphs.png)
+<video src="assets/videos/demo.mp4" width="720" autoplay muted loop playsinline></video>
 
-### Demo Video
-<!-- Prefer MP4 under 100 MB or a short GIF -->
-[▶ Watch the demo](assets/videos/demo.mp4)
-
-> If you prefer inline playback, you can embed HTML:
->
-> <video src="assets/videos/demo.mp4" controls title="QC Demo" width="720"></video>
 
 ---
 

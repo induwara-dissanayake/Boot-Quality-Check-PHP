@@ -46,7 +46,7 @@ It replaces paper/Excel forms with a clean interface for operators and superviso
 ## 🧱 Tech Stack
 - **Backend**: Laravel (PHP 8+)
 - **Database**: MySQL
-- **Views**: Blade / HTML / CSS / (Bootstrap if used)
+- **Views**: Blade / HTML / CSS / Bootstrap
 - **Hosting**: InfinityFree
 
 ---
@@ -83,14 +83,10 @@ It replaces paper/Excel forms with a clean interface for operators and superviso
 ## 📌 Project Status
 Personal **portfolio project** to showcase skills in Laravel + MySQL + reporting.
 
----
-
-## 📄 License
-Distributed under the **MIT License**. See [`LICENSE`](LICENSE).
 
 ---
 
 ## ✍️ Author
 **Induwara Dissanayake**  
-Email: your@email  
-LinkedIn / Portfolio: your-link
+Email: sahasrainduwara35@gmail.com  
+Portfolio: [your-link](https://portfolio-induwara.vercel.app/)

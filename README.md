@@ -1,5 +1,7 @@
 # 🥾 Boot Quality Check System
 
+<div align="left">
+
 [![Laravel](https://img.shields.io/badge/Laravel-Framework-FF2D20?logo=laravel&logoColor=white)](https://laravel.com/)
 ![PHP](https://img.shields.io/badge/PHP-8%2B-777BB4?logo=php&logoColor=white)
 ![MySQL](https://img.shields.io/badge/MySQL-Database-4479A1?logo=mysql&logoColor=white)
@@ -7,8 +9,11 @@
 ![Status](https://img.shields.io/badge/Status-Portfolio%20Project-8A2BE2)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
+</div>
+
 A modern **Laravel + MySQL** web app that digitizes the quality-check workflow in a **safety boot manufacturing** environment.  
 It replaces paper/Excel forms with a clean interface for operators and supervisors—faster, searchable, and report-ready.
+
 
 ---
 

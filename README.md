@@ -73,7 +73,7 @@ It replaces paper/Excel forms with a clean interface for operators and superviso
 
 ## 🎥 Demo Video
 
-[![Watch the demo](assets/screenshots/demo_preview.gif)](assets/videos/demo.mp4)
+[![Watch the demo](assets/screenshots/demo_preview.gif)](https://youtu.be/ALw_QjCBn78)
 
 
 

@@ -70,7 +70,7 @@ It replaces paper/Excel forms with a clean interface for operators and superviso
    <img src="assets/screenshots/user_login.png" width="32%">
 </p>
 
-**Videos** → `assets/videos/`  
+
 ## 🎥 Demo Video
 
 <video src="assets/videos/demo.mp4" width="720" autoplay muted loop playsinline></video>
